@@ -1,0 +1,11 @@
+[package]
+name = "haumaru_api"
+version = "0.1.0"
+authors = ["Shane Gibbs <shane@hands.net.nz>"]
+
+[dependencies]
+log = "*"
+notify = "*"
+walkdir = "*"
+rusqlite = "0.7.3"
+time = "*"
