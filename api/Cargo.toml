@@ -9,3 +9,11 @@ notify = "*"
 walkdir = "*"
 rusqlite = "0.7.3"
 time = "*"
+rust-crypto = "*"
+rustc-serialize = "*"
+
+[target.'cfg(apple)'.dependencies]
+fsevent =  { git = "https://github.com/shanegibbs/fsevent-rust.git" }
+
+[dev-dependencies]
+env_logger = "*"

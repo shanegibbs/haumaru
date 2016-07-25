@@ -2,11 +2,21 @@ use std::result::Result as StdResult;
 use std::sync::mpsc::{Receiver, RecvError};
 use notify::Event;
 use std::path::{Path, PathBuf};
+use std::fmt;
 
 pub type Result<T> = StdResult<T, WatcherError>;
 
 pub enum WatcherError {
     ChannelRecv(RecvError),
+}
+
+impl fmt::Display for WatcherError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> StdResult<(), fmt::Error> {
+        match *self {
+            WatcherError::ChannelRecv(ref e) => write!(f, "Receiver channel error: {}", e).unwrap(),
+        }
+        Ok(())
+    }
 }
 
 pub struct Watcher {
@@ -34,7 +44,7 @@ impl Watcher {
             let op = match event.op.as_ref() {
                 Ok(o) => o,
                 Err(e) => {
-                    warn!("Received notify without op, ignoring: {:?}", event);
+                    warn!("Received notify without op, ignoring {:?}: {}", event, e);
                     continue;
                 }
             };
@@ -43,7 +53,6 @@ impl Watcher {
 
             f(Change::new(path.clone()));
         }
-        Ok(0)
     }
 }
 

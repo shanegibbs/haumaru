@@ -1,9 +1,10 @@
 [package]
 name = "haumaru"
-version = "0.1.0"
+version = "0.0.0"
 authors = ["Shane Gibbs <shane@hands.net.nz>"]
 
 [dependencies]
 haumaru_api = { path = "api" }
 log = "*"
 env_logger = "*"
+time = "*"
