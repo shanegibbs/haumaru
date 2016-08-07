@@ -64,8 +64,9 @@ fn hash_path(hash: &String) -> PathBuf {
 }
 
 impl Storage for LocalStorage {
+    // TODO change args to just std::io::Read
     fn send(&self, base: &String, mut n: Node) -> Result<Node, Box<Error>> {
-        use std::io::Cursor;
+        use std::io::{Cursor, copy};
 
         debug!("Sending {:?}", n);
 
@@ -80,14 +81,12 @@ impl Storage for LocalStorage {
         debug!("Hashing {:?} to {:?}", path, dst_path);
         let mut hasher = Sha256::new();
 
-        let mut buffer: Vec<u8> = vec![];
-        let cursor = Cursor::new(&mut buffer);
+        let buffer: Vec<u8> = vec![];
+        let mut cursor = Cursor::new(buffer);
 
         {
             let mut src_file = File::open(path)?;
-            let mut dst_file = File::create(&dst_path)?;
-
-            let mut buffer = [0; 4096];
+            let mut buffer = [0; 32768];
 
             loop {
                 let read = src_file.read(&mut buffer[..])?;
@@ -97,10 +96,7 @@ impl Storage for LocalStorage {
 
                 trace!("Read {} bytes", read);
                 hasher.input(&buffer[0..read]);
-                dst_file.write(&buffer[0..read])
-                    .map_err(|e| {
-                        LocalStorageError::Io(format!("Failed writing to: {:?}", dst_path), e)
-                    })?;
+                cursor.write(&buffer[0..read])?;
             }
         }
 
@@ -132,6 +128,15 @@ impl Storage for LocalStorage {
         if hash_filename.exists() {
             debug!("Already have {}", hex);
         } else {
+
+            debug!("Writing to {:?}", dst_path);
+            let mut dst_file = File::create(&dst_path)?;
+            cursor.set_position(0);
+            copy(&mut cursor, &mut dst_file)
+                .map_err(|e| {
+                    LocalStorageError::Io(format!("Failed writing to: {:?}", dst_path), e)
+                })?;
+
             debug!("Moving new hash to {:?}", hash_filename);
             rename(dst_path, &hash_filename)
                 .map_err(|e| {
