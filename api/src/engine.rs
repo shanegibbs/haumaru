@@ -120,13 +120,19 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
             // process each item that exists
             for entry in &ls {
 
+                let ftype = entry.file_type()?;
+                if ftype.is_symlink() {
+                    // TODO handle symlinks
+                    continue;
+                }
+
                 let entry_path = entry.path();
 
                 self.process_change(Change::new(entry_path.clone()))?;
 
                 if entry_path.is_dir() {
                     debug!("Scan dir  {:?}", entry_path);
-                    queue.push_back(entry_path.to_str().unwrap().to_string());
+                    queue.push_front(entry_path.to_str().unwrap().to_string());
                 }
 
             }
@@ -137,15 +143,24 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
             for known_node in known_nodes {
                 debug!("Checking {}", known_node.path);
                 let mut found = false;
-                for entry in &ls {
+                let mut found_at = 0;
+                for i in 0..ls.len() {
+                    let entry = &ls.get(i).unwrap();
                     let entry_key = get_key(&self.path, entry.path().to_str().unwrap());
-                    debug!("Compare {} and {:?}", known_node.path, entry_key);
+                    // debug!("Compare {} and {:?}", known_node.path, entry_key);
                     if known_node.path == entry_key {
                         found = true;
+                        found_at = i;
+                        break;
                     }
                 }
-                debug!("found={}", found);
-                if !found {
+                if found {
+                    // remove from search list to speed up iteration
+                    let removed = ls.remove(found_at);
+                    assert_eq!(&get_key(&self.path, removed.path().to_str().unwrap()),
+                               &known_node.path);
+                } else {
+                    debug!("Found node no longer on disk: {}", known_node.path);
                     let mut change_path = PathBuf::new();
                     change_path.push(&self.path);
                     change_path.push(&known_node.path);

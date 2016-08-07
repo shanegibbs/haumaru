@@ -103,7 +103,7 @@ static GET_LATEST_QUERY_SQL: &'static str = "
     LIMIT 1";
 
 static LIST_PATH_QUERY_SQL: &'static str = "
-    SELECT path.path, node.kind, node.mtime, node.size, node.mode,
+    SELECT node.id as id, path.path, node.kind, node.mtime, node.size, node.mode,
         node.deleted, node.hash
     FROM node
     INNER JOIN path
@@ -370,6 +370,7 @@ impl<'a> Index for SqlLightIndex<'a> {
 
     fn list<S: Into<String>>(&mut self, path: S) -> Result<Vec<Node>, Box<Error>> {
         let path = path.into();
+        trace!("Listing path {}", path);
 
         let mut rows = self.list_path
             .query(&[&path])
@@ -404,6 +405,7 @@ impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
             }
         };
 
+        let id = get_u64_from_row(&row, "id");
         let size = get_u64_from_row(&row, "size");
         let mode = get_u32_from_row(&row, "mode");
 
@@ -416,13 +418,20 @@ impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
         };
 
         match row.get_checked("hash")? {
-            Value::Blob(b) => node = node.with_hash(b),
-            Value::Null => (),
+            Value::Blob(b) => {
+                trace!("Setting hash");
+                node = node.with_hash(b)
+            }
+            Value::Null => trace!("Hash is Null"),
             v => return SqlLightIndexError::other(format!("node.hash is not blob type: {:?}", v)),
         }
 
+        trace!("Building {:?}", node);
+
         if node.kind == NodeKind::File && node.hash == None {
-            return SqlLightIndexError::other(format!("File node is missing hash: {:?}", node));
+            return SqlLightIndexError::other(format!("File node({}) is missing hash: {:?}",
+                                                     id,
+                                                     node));
         }
 
         Ok(node)
