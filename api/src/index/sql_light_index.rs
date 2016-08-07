@@ -4,7 +4,8 @@
 //!  id(SERIAL), path(TEXT)
 //!
 //! `node` Table
-//! id(SERIAL), path_id(INTEGER), type, mtime(INTEGER), size, mode, deleted, hash
+//! id(SERIAL), parent_id(INTEGER), path_id(INTEGER), type, mtime(INTEGER),
+//!     size, mode, deleted, hash
 //!
 
 use std::error::Error;
@@ -56,9 +57,9 @@ static CREATE_TABLE_PATH_SQL: &'static str = "
     )";
 
 static CREATE_INDEX_PATH_SQL: &'static str = "
-CREATE INDEX IF NOT EXISTS path_path_index
-ON path (path);
-";
+    CREATE INDEX IF NOT EXISTS path_path_index
+    ON path (path);
+    ";
 
 static SELECT_PATH_SQL: &'static str = "SELECT id FROM path WHERE path = ?";
 
@@ -78,14 +79,14 @@ static CREATE_TABLE_NODE_SQL: &'static str = "
     )";
 
 static CREATE_INDEX_NODE_PATH_ID_SQL: &'static str = "
-CREATE INDEX IF NOT EXISTS node_path_id_index
-ON node (path_id);
-";
+    CREATE INDEX IF NOT EXISTS node_path_id_index
+    ON node (path_id);
+    ";
 
 static CREATE_INDEX_NODE_PARENT_ID_SQL: &'static str = "
-CREATE INDEX IF NOT EXISTS node_parent_id_index
-ON node (parent_id);
-";
+    CREATE INDEX IF NOT EXISTS node_parent_id_index
+    ON node (parent_id);
+    ";
 
 static INSERT_NODE_SQL: &'static str = "
     INSERT INTO node

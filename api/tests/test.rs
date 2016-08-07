@@ -4,7 +4,6 @@ extern crate env_logger;
 extern crate haumaru_api;
 extern crate rusqlite;
 
-// use time::Timespec;
 use std::fs::{File, remove_file, create_dir_all, remove_dir, remove_dir_all};
 use rusqlite::Connection;
 use std::path::PathBuf;
