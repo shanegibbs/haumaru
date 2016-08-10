@@ -8,3 +8,4 @@ haumaru_api = { path = "api" }
 log = "*"
 env_logger = "*"
 time = "*"
+clap = "*"

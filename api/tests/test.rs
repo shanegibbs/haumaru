@@ -73,25 +73,22 @@ fn test_change<'a, F>(name: &str, f: F) -> Vec<Record>
     create_dir_all(&test_dir).unwrap();
     let path = PathBuf::from(test_dir.clone()).canonicalize().unwrap();
 
-    // create store path
-    let mut store_path = PathBuf::new();
-    store_path.push(path.clone());
-    store_path.push("store");
-    create_dir_all(&store_path).unwrap();
-    let store_path_str = store_path.to_str().unwrap().to_string();
+    let mut working_path = path.clone();
+    working_path.push("working");
 
-    // create files path
-    let mut files_path = PathBuf::new();
-    files_path.push(path.clone());
+    let mut files_path = path.clone();
     files_path.push("files");
     create_dir_all(&files_path).unwrap();
-    let files_path_str = files_path.to_str().unwrap().to_string();
 
-    let store = LocalStorage::new(store_path_str).unwrap();
+    let config = EngineConfig::new(files_path.to_str().unwrap(),
+                                   working_path.to_str().unwrap(),
+                                   "900")
+        .unwrap();
+
+    let store = LocalStorage::new(&config).unwrap();
 
     {
-        let mut engine = DefaultEngine::new(files_path_str, HashSet::new(), &mut index, store)
-            .unwrap();
+        let mut engine = DefaultEngine::new(config, HashSet::new(), &mut index, store).unwrap();
         f(&mut engine, files_path);
     }
 

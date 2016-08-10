@@ -9,7 +9,7 @@ use std::io;
 use std::io::{Read, Write};
 use std::fs::{create_dir_all, rename};
 
-use {Node, Storage};
+use {EngineConfig, Node, Storage};
 
 #[derive(Debug)]
 pub enum LocalStorageError {
@@ -35,17 +35,25 @@ pub struct LocalStorage {
 }
 
 impl LocalStorage {
-    pub fn new(target: String) -> Result<Self, LocalStorageError> {
-        let pb = PathBuf::from(&target);
-        if !pb.exists() {
-            return Err(LocalStorageError::Generic(format!("Storage path does not exist: {}",
-                                                          target)));
+    pub fn new(config: &EngineConfig) -> Result<Self, LocalStorageError> {
+        let mut storage_path = PathBuf::new();
+        storage_path.push(config.working());
+        storage_path.push("store");
+
+        if !storage_path.exists() {
+            create_dir_all(&storage_path)
+                .map_err(|e| {
+                    LocalStorageError::Generic(format!("Unable to create storage path {:?}: {}",
+                                                       storage_path,
+                                                       e))
+                })?;
         }
-        if !pb.is_dir() {
-            return Err(LocalStorageError::Generic(format!("Storage path is not a directory: {}",
-                                                          target)));
+        if !storage_path.is_dir() {
+            return Err(LocalStorageError::Generic(format!("Storage path is not a directory: \
+                                                           {:?}",
+                                                          storage_path)));
         }
-        Ok(LocalStorage { target: target })
+        Ok(LocalStorage { target: storage_path.to_str().unwrap().to_string() })
     }
 }
 
@@ -65,14 +73,14 @@ fn hash_path(hash: &String) -> PathBuf {
 
 impl Storage for LocalStorage {
     // TODO change args to just std::io::Read
-    fn send(&self, base: &String, mut n: Node) -> Result<Node, Box<Error>> {
+    fn send(&self, base: String, mut n: Node) -> Result<Node, Box<Error>> {
         use std::io::{Cursor, copy};
 
         debug!("Sending {:?}", n);
 
         let mut path = PathBuf::new();
         path.push(base);
-        path.push(&n.path);
+        path.push(n.path());
 
         let mut dst_path = PathBuf::new();
         dst_path.push(&self.target);
@@ -105,10 +113,10 @@ impl Storage for LocalStorage {
         hasher.result(&mut bytes);
         let mut vec = Vec::with_capacity(32);
         vec.append(&mut bytes.to_vec());
-        n.hash = Some(vec);
+        n.set_hash(vec);
 
         // hex string
-        let hex_b = n.hash.as_ref().unwrap().clone();
+        let hex_b = n.hash().as_ref().unwrap().clone();
         let hex_slice = hex_b.as_slice();
         let hex: String = hex_slice.to_hex();
 
@@ -158,7 +166,7 @@ mod test {
     use std::fs::{File, create_dir_all, remove_dir_all};
     use std::io::{Read, Write};
     use std::path::PathBuf;
-    use {Node, Storage};
+    use {EngineConfig, Node, Storage};
     use time::Timespec;
 
     #[test]
@@ -168,8 +176,8 @@ mod test {
         // begin setup
         let test_dir = format!("target/test/{}", name);
         let _ = remove_dir_all(&test_dir);
-        create_dir_all(&test_dir).unwrap();
-        let path = PathBuf::from(test_dir.clone()).canonicalize().unwrap();
+        create_dir_all(&test_dir).expect("mkdir test_dir");
+        let path = PathBuf::from(test_dir.clone()).canonicalize().expect("canonicalize test_dir");
         // end setup
 
         let mut filename = path.clone();
@@ -177,27 +185,31 @@ mod test {
         let content = "";
 
         {
-            let mut f = File::create(&filename).unwrap();
-            f.write_all(content.as_bytes()).unwrap();
+            let mut f = File::create(&filename).expect("create filename");
+            f.write_all(content.as_bytes()).expect("write bytes");
         }
 
-        let storage = LocalStorage::new(test_dir.clone()).unwrap();
-        let node = storage.send(&test_dir, Node::new_file("a", Timespec::new(10, 0), 0, 490))
-            .unwrap();
+        let config = EngineConfig::new("", &test_dir, "900").expect("new engine config");
+
+        let storage = LocalStorage::new(&config).expect("new local storage");
+        let node = storage.send(test_dir.clone(),
+                  Node::new_file("a", Timespec::new(10, 0), 0, 490))
+            .expect("Send node");
 
         let mut hash_filename = path.clone();
+        hash_filename.push("store");
         hash_filename.push("e3");
         hash_filename.push("b0");
         hash_filename.push("c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
-        let mut f = File::open(hash_filename).unwrap();
+        let mut f = File::open(hash_filename).expect("hash_filename exist");
         let mut s = String::new();
-        f.read_to_string(&mut s).unwrap();
+        f.read_to_string(&mut s).expect("read hash_filename");
         assert_eq!(s, "");
-        assert_eq!(Some(vec![227, 176, 196, 66, 152, 252, 28, 20, 154, 251, 244, 200, 153, 111,
-                             185, 36, 39, 174, 65, 228, 100, 155, 147, 76, 164, 149, 153, 27,
-                             120, 82, 184, 85]),
-                   node.hash)
+        assert_eq!(&Some(vec![227, 176, 196, 66, 152, 252, 28, 20, 154, 251, 244, 200, 153, 111,
+                              185, 36, 39, 174, 65, 228, 100, 155, 147, 76, 164, 149, 153, 27,
+                              120, 82, 184, 85]),
+                   node.hash())
 
     }
 
@@ -208,8 +220,8 @@ mod test {
         // begin setup
         let test_dir = format!("target/test/{}", name);
         let _ = remove_dir_all(&test_dir);
-        create_dir_all(&test_dir).unwrap();
-        let path = PathBuf::from(test_dir.clone()).canonicalize().unwrap();
+        create_dir_all(&test_dir).expect("mkdir test_dir");
+        let path = PathBuf::from(test_dir.clone()).canonicalize().expect("canonicalize test_dir");
         // end setup
 
         let mut filename = path.clone();
@@ -217,27 +229,31 @@ mod test {
         let content = "0123456789abcdefghijklmnopqrstuvwxyz";
 
         {
-            let mut f = File::create(&filename).unwrap();
-            f.write_all(content.clone().as_bytes()).unwrap();
+            let mut f = File::create(&filename).expect("create filename");
+            f.write_all(content.as_bytes()).expect("write bytes");
         }
 
-        let storage = LocalStorage::new(test_dir.clone()).unwrap();
-        let node = storage.send(&test_dir, Node::new_file("a", Timespec::new(10, 0), 0, 490))
-            .unwrap();
+        let config = EngineConfig::new("", &test_dir, "900").expect("new engine config");
+
+        let storage = LocalStorage::new(&config).expect("new local storage");
+        let node = storage.send(test_dir.clone(),
+                  Node::new_file("a", Timespec::new(10, 0), 0, 490))
+            .expect("Send node");
 
         let mut hash_filename = path.clone();
+        hash_filename.push("store");
         hash_filename.push("74");
         hash_filename.push("e7");
         hash_filename.push("e5bb9d22d6db26bf76946d40fff3ea9f0346b884fd0694920fccfad15e33");
 
-        let mut f = File::open(hash_filename).unwrap();
+        let mut f = File::open(hash_filename).expect("hash_filename exist");
         let mut s = String::new();
-        f.read_to_string(&mut s).unwrap();
+        f.read_to_string(&mut s).expect("read hash_filename");
         assert_eq!(s, content);
-        assert_eq!(Some(vec![116, 231, 229, 187, 157, 34, 214, 219, 38, 191, 118, 148, 109, 64,
-                             255, 243, 234, 159, 3, 70, 184, 132, 253, 6, 148, 146, 15, 204, 250,
-                             209, 94, 51]),
-                   node.hash)
+        assert_eq!(&Some(vec![116, 231, 229, 187, 157, 34, 214, 219, 38, 191, 118, 148, 109, 64,
+                              255, 243, 234, 159, 3, 70, 184, 132, 253, 6, 148, 146, 15, 204,
+                              250, 209, 94, 51]),
+                   node.hash())
     }
 
 }

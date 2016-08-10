@@ -8,10 +8,38 @@ use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::fmt::{Formatter, Display};
 use std::fmt::Error as FmtError;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+use std::num::ParseIntError;
 
 use filesystem::Change;
 use {Engine, Index, Storage, get_key};
+
+#[derive(Debug)]
+pub struct EngineConfig {
+    path: String,
+    working: String,
+    period: u32,
+}
+
+impl EngineConfig {
+    pub fn new(path: &str, working: &str, period: &str) -> StdResult<Self, ParseIntError> {
+        let period = period.parse::<u32>()?;
+        Ok(EngineConfig {
+            path: path.to_string(),
+            working: working.to_string(),
+            period: period,
+        })
+    }
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+    pub fn working(&self) -> &str {
+        &self.working
+    }
+    pub fn period(&self) -> u32 {
+        self.period
+    }
+}
 
 pub type Result<T> = StdResult<T, DefaultEngineError>;
 
@@ -23,6 +51,7 @@ pub enum DefaultEngineError {
     Scan(BackupPathError),
     Index(Box<StdError>),
     Storage(String, Box<StdError>),
+    Other(String),
 }
 
 impl StdError for DefaultEngineError {
@@ -49,6 +78,7 @@ impl Display for DefaultEngineError {
             DefaultEngineError::Storage(ref s, ref e) => {
                 write!(f, "Storage error: {}: {}", s, e).unwrap()
             }
+            DefaultEngineError::Other(ref s) => write!(f, "Engine error: {}", s).unwrap(),
         }
         Ok(())
     }
@@ -59,7 +89,7 @@ pub struct DefaultEngine<'i, I, S>
           S: Storage,
           I: 'i
 {
-    path: String,
+    config: EngineConfig,
     excludes: HashSet<String>,
     index: &'i mut I,
     storage: S,
@@ -70,27 +100,30 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
     where I: Index,
           S: Storage
 {
-    pub fn new<T>(path: T,
-                  excludes: HashSet<String>,
-                  index: &'i mut I,
-                  storage: S)
-                  -> StdResult<Self, Box<StdError>>
-        where T: Into<String>
-    {
-        let path = path.into();
-        let path_buf = PathBuf::from(&path).canonicalize().unwrap();
+    pub fn new(config: EngineConfig,
+               excludes: HashSet<String>,
+               index: &'i mut I,
+               storage: S)
+               -> StdResult<Self, Box<StdError>> {
+        let path_buf = PathBuf::from(config.path())
+            .canonicalize()
+            .map_err(|e| {
+                DefaultEngineError::Other(format!("Unable to canonicalize backup path {}: {}",
+                                                  config.path(),
+                                                  e))
+            })?;
         let abs_path = path_buf.to_str().unwrap().to_string();
         // let path = path.as_ref().to_path_buf();
         // let path = path.canonicalize().unwrap();
 
-        debug!("Base path: {}", path);
+        debug!("Base path: {}", config.path());
         debug!("Exclude paths: {:?}", excludes);
 
         let bp = try!(BackupPath::new(abs_path.clone())
             .map_err(|e| DefaultEngineError::CreateBackupPath(e)));
 
         Ok(DefaultEngine {
-            path: abs_path,
+            config: config,
             excludes: excludes,
             index: index,
             storage: storage,
@@ -106,7 +139,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
         use std::fs::DirEntry;
 
         let mut queue = VecDeque::new();
-        queue.push_back(self.path.clone());
+        queue.push_back(self.config.path().to_string());
 
         while let Some(p) = queue.pop_front() {
             debug!("Scanning {:?}", p);
@@ -115,7 +148,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
             for entry in read_dir(&p)? {
                 ls.push(entry?);
             }
-            let known_nodes = self.index.list(get_key(&self.path, &p))?;
+            let known_nodes = self.index.list(get_key(self.config.path(), &p))?;
 
             // process each item that exists
             for entry in &ls {
@@ -123,6 +156,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
                 let ftype = entry.file_type()?;
                 if ftype.is_symlink() {
                     // TODO handle symlinks
+                    warn!("Skipping symlink {:?}", entry.file_name());
                     continue;
                 }
 
@@ -141,14 +175,14 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
             // i.e. check for deleted ndoes
             debug!("known_nodes.len={}", known_nodes.len());
             for known_node in known_nodes {
-                debug!("Checking {}", known_node.path);
+                debug!("Checking {}", known_node.path());
                 let mut found = false;
                 let mut found_at = 0;
                 for i in 0..ls.len() {
                     let entry = &ls.get(i).unwrap();
-                    let entry_key = get_key(&self.path, entry.path().to_str().unwrap());
+                    let entry_key = get_key(self.config.path(), entry.path().to_str().unwrap());
                     // debug!("Compare {} and {:?}", known_node.path, entry_key);
-                    if known_node.path == entry_key {
+                    if known_node.path() == entry_key {
                         found = true;
                         found_at = i;
                         break;
@@ -157,13 +191,13 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
                 if found {
                     // remove from search list to speed up iteration
                     let removed = ls.remove(found_at);
-                    assert_eq!(&get_key(&self.path, removed.path().to_str().unwrap()),
-                               &known_node.path);
+                    assert_eq!(&get_key(self.config.path(), removed.path().to_str().unwrap()),
+                               known_node.path());
                 } else {
-                    debug!("Found node no longer on disk: {}", known_node.path);
+                    debug!("Found node no longer on disk: {}", known_node.path());
                     let mut change_path = PathBuf::new();
-                    change_path.push(&self.path);
-                    change_path.push(&known_node.path);
+                    change_path.push(self.config.path());
+                    change_path.push(&known_node.path());
                     self.process_change(Change::new(change_path))?;
                 }
             }
@@ -175,7 +209,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
     }
 }
 
-fn is_excluded(excludes: &HashSet<String>, change: &Change, base_path: &String) -> bool {
+fn is_excluded(excludes: &HashSet<String>, change: &Change, base_path: &str) -> bool {
     let change_path_str = change.path().to_str().unwrap();
     for exclude in excludes {
         if change_path_str.starts_with(exclude) {
@@ -194,7 +228,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
 {
     fn run(&mut self) -> StdResult<u64, Box<StdError>> {
 
-        info!("Starting backup engine on {}", self.path);
+        info!("Starting backup engine on {}", self.config.path());
 
         let changes = Arc::new(Mutex::new(HashSet::new()));
 
@@ -203,7 +237,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                 try!(self.backup_path.watcher().map_err(|e| DefaultEngineError::StartWatcher(e)));
             let changes = changes.clone();
             let local_excludes = self.excludes.clone();
-            let local_path = self.path.clone();
+            let local_path = self.config.path().to_string();
             thread::spawn(move || {
                 match watcher.watch(move |change| {
                     if is_excluded(&local_excludes, &change, &local_path) {
@@ -227,7 +261,15 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
         self.scan()?;
 
         loop {
-            let start = SystemTime::now();
+            use time;
+            use time::Timespec;
+
+            let now = time::now_utc().to_timespec();
+            let seconds_div = (now.sec / self.config.period() as i64) as i64;
+            let seconds = (seconds_div + 1) * self.config.period() as i64;
+            let next_time = Timespec::new(seconds, 0);
+
+            info!("Beginning backup run");
 
             let mut work_queue = vec![];
             {
@@ -238,36 +280,22 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                 }
             }
 
-            if !work_queue.is_empty() {
-                info!("Beginning backup run");
-            }
-
             for change in work_queue {
                 self.process_change(change).unwrap();
             }
 
             loop {
-                sleep(Duration::new(1, 0));
-                match start.elapsed() {
-                    Ok(elapsed) => {
-                        if elapsed.as_secs() >= 900 {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Timer failed: {}", e);
-                    }
+                let now = time::now_utc().to_timespec();
+                if now >= next_time {
+                    break;
                 }
+                sleep(Duration::new(1, 0));
             }
-
-            // debug!("Sleeping");
-            // sleep(Duration::from_secs(3));
         }
-
     }
 
     fn process_change(&mut self, change: Change) -> StdResult<(), Box<StdError>> {
-        if is_excluded(&self.excludes, &change, &self.path) {
+        if is_excluded(&self.excludes, &change, self.config.path()) {
             trace!("Skipping excluded path: {:?}", change.path());
             return Ok(());
         }
@@ -275,7 +303,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
         debug!("Received {:?}", change);
 
         let change_path_str = change.path().to_str().unwrap();
-        let key = get_key(&self.path, change_path_str);
+        let key = get_key(self.config.path(), change_path_str);
         debug!("Change key = {}", key);
 
         let node = try!(self.index
@@ -295,14 +323,14 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                         info!("- {}", key);
                         debug!("Detected DELETE on {:?}, {:?}", change, existing_node);
                         self.index
-                            .insert(existing_node.deleted())
+                            .insert(existing_node.as_deleted())
                             .map_err(|e| DefaultEngineError::Index(e))?;
                     }
                 }
             }
             Some(new_node) => {
 
-                if new_node.size > 1024 * 1024 * 10 {
+                if new_node.size() > 1024 * 1024 * 10 {
                     warn!("Skipping large file {}", key);
                     return Ok(());
                 }
@@ -315,7 +343,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                             true => new_node,
                             false => {
                                 try!(self.storage
-                                    .send(&self.path, new_node)
+                                    .send(self.config.path().to_string(), new_node)
                                     .map_err(|e| {
                                         DefaultEngineError::Storage(format!("Failed to send \
                                                                              file: {}",
@@ -337,8 +365,8 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                         }
 
                         // size and mtime match, skip.
-                        if new_node.size == existing_node.size &&
-                           new_node.mtime == existing_node.mtime {
+                        if new_node.size() == existing_node.size() &&
+                           new_node.mtime() == existing_node.mtime() {
                             debug!("  {} (assume match)", key);
                             return Ok(());
                         }
@@ -352,7 +380,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                             true => new_node,
                             false => {
                                 try!(self.storage
-                                    .send(&self.path, new_node)
+                                    .send(self.config.path().to_string(), new_node)
                                     .map_err(|e| {
                                         DefaultEngineError::Storage(format!("Failed to send \
                                                                              file: {}",

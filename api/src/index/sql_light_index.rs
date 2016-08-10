@@ -236,51 +236,31 @@ impl<'a> Index for SqlLightIndex<'a> {
             return Ok(None);
         }
         let row = row.unwrap().unwrap();
-
-        let path_str: String = row.get("path");
-
-        let mtime: i64 = match row.get_checked("mtime") {
-            Ok(Value::Integer(i)) => i,
-            Ok(n) => {
-                return SqlLightIndexError::other(format!("Wrong type for mtime: {:?}", n));
-            }
-            Err(e) => {
-                error!("Unable to get mtime: {}", e);
-                return Err(Box::new(e));
-            }
-        };
-
-        let size = get_u64_from_row(&row, "size");
-        let mode = get_u32_from_row(&row, "mode");
-
-        let kind_char = get_string_from_row(&row, "kind");
-
-        match kind_char.as_ref() {
-            "F" => Ok(Some(Node::new_file(path_str, Timespec::new(mtime, 0), size, mode))),
-            "D" => Ok(Some(Node::new_dir(path_str, Timespec::new(mtime, 0), mode))),
-            k => SqlLightIndexError::other(format!("Unknown kind: {}", k)),
-        }
+        let node: Node = row.try_into()?;
+        node.validate();
+        Ok(Some(node))
     }
 
     fn insert(&mut self, node: Node) -> Result<Node, Box<Error>> {
         debug!("Inserting {:?}", node);
+        node.validate();
         // path_id, kind, mtime, size, mode, deleted, hash
 
         if node.is_file() {
             let ref node = node;
-            if !node.has_hash() && !node.is_deleted() {
+            if !node.has_hash() && !node.deleted() {
                 let msg = "File node missing hash".into();
                 let node = Some(node.clone());
                 return Err(box SqlLightIndexError::IllegalArgument(msg, node));
             }
-            if node.is_deleted() {
+            if node.deleted() {
                 if node.has_hash() {
                     let msg = "Deleted file can not have hash".into();
                     let node = Some(node.clone());
                     return Err(box SqlLightIndexError::IllegalArgument(msg, node));
                 }
             } else {
-                if let Some(ref v) = node.hash {
+                if let Some(ref v) = *node.hash() {
                     if v.is_empty() {
                         let msg = "File node hash is empty".into();
                         let node = Some(node.clone());
@@ -290,50 +270,51 @@ impl<'a> Index for SqlLightIndex<'a> {
             }
         }
 
-        let node_path = node.path.clone();
-        let path = Path::new(&node_path);
-        let parent_path = match path.parent() {
-            Some(p) => p,
-            None => {
-                let msg = "Unable to get parent path".into();
-                let node = Some(node.clone());
-                return Err(box SqlLightIndexError::IllegalArgument(msg, node));
+        {
+            let path = Path::new(node.path());
+            let parent_path = match path.parent() {
+                Some(p) => p,
+                None => {
+                    let msg = "Unable to get parent path".into();
+                    let node = Some(node.clone());
+                    return Err(box SqlLightIndexError::IllegalArgument(msg, node));
+                }
+            };
+            let parent_path_str = parent_path.to_str().unwrap();
+
+            let id = try!(self.get_path_id(node.path().clone()));
+            let parent_id = self.get_path_id(parent_path_str)?;
+
+            debug!("Path id={:?}, key={}", id, node.path());
+
+            let kind;
+            let mut size = None;
+
+            match node.kind() {
+                NodeKind::File => {
+                    kind = "F";
+                    size = Some(node.size() as i64);
+                }
+                NodeKind::Dir => {
+                    kind = "D";
+                }
             }
-        };
-        let parent_path_str = parent_path.to_str().unwrap();
 
-        let id = try!(self.get_path_id(node.path.clone()));
-        let parent_id = self.get_path_id(parent_path_str)?;
+            let mode = node.mode() as i64;
 
-        debug!("Path id={:?}, key={}", id, node.path);
-
-        let kind;
-        let mut size = None;
-
-        match node.kind {
-            NodeKind::File => {
-                kind = "F";
-                size = Some(node.size as i64);
-            }
-            NodeKind::Dir => {
-                kind = "D";
-            }
+            self.insert_node
+                .execute(&[&parent_id,
+                           &id,
+                           &kind,
+                           &node.mtime().sec,
+                           &size,
+                           &mode,
+                           &node.deleted(),
+                           node.hash()])
+                .map_err(|e| {
+                    SqlLightIndexError::FailedNodeStatement(format!("Insert"), node.clone(), e)
+                })?;
         }
-
-        let mode = node.mode as i64;
-
-        self.insert_node
-            .execute(&[&parent_id,
-                       &id,
-                       &kind,
-                       &node.mtime.sec,
-                       &size,
-                       &mode,
-                       &node.deleted,
-                       &node.hash])
-            .map_err(|e| {
-                SqlLightIndexError::FailedNodeStatement(format!("Insert"), node.clone(), e)
-            })?;
         Ok(node)
     }
 
@@ -381,7 +362,9 @@ impl<'a> Index for SqlLightIndex<'a> {
         let mut v = vec![];
         while let Some(row_result) = rows.next() {
             let row = row_result.unwrap();
-            v.push(row.try_into()?);
+            let node: Node = row.try_into()?;
+            node.validate();
+            v.push(node);
         }
 
         Ok(v)
@@ -427,8 +410,9 @@ impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
         }
 
         trace!("Building {:?}", node);
+        node.validate();
 
-        if node.kind == NodeKind::File && node.hash == None {
+        if node.kind() == NodeKind::File && node.hash().is_none() {
             return SqlLightIndexError::other(format!("File node({}) is missing hash: {:?}",
                                                      id,
                                                      node));
@@ -491,7 +475,8 @@ mod test {
 
         let mtime = Timespec::new(10, 0);
         let mut n = Node::new_file("a", mtime, 1024, 500);
-        n.hash = Some(vec![0, 1, 0, 1]);
+        n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                        21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
         index.insert(n).unwrap();
     }
@@ -502,13 +487,15 @@ mod test {
         let conn = Connection::open_in_memory().unwrap();
         let mut index = SqlLightIndex::new(&conn).unwrap();
 
-        let mtime = Timespec::new(10, 0);
-        let mut n = Node::new_file("a", mtime, 1024, 500);
-        n.hash = Some(vec![0, 1, 0, 1]);
+        let n = Node::new_file("a", Timespec::new(10, 0), 1024, 500)
+            .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                            20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
         index.insert(n.clone()).unwrap();
 
-        n.mtime = Timespec::new(11, 0);
+        let n = Node::new_file("a", Timespec::new(11, 0), 1024, 500)
+            .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                            20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
         index.insert(n).unwrap();
     }
 
@@ -520,7 +507,8 @@ mod test {
 
         let mtime = Timespec::new(10, 0);
         let mut n = Node::new_file("a", mtime, 1024, 500);
-        n.hash = Some(vec![0, 1, 0, 1]);
+        n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                        21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
         index.insert(n).unwrap();
 
@@ -528,10 +516,10 @@ mod test {
         assert!(n.is_some());
         let n = n.unwrap();
 
-        assert_eq!("a", n.path.as_str());
-        assert_eq!(Timespec::new(10, 0), n.mtime);
-        assert_eq!(500, n.mode);
-        assert_eq!(1024, n.size);
+        assert_eq!("a", n.path());
+        assert_eq!(&Timespec::new(10, 0), n.mtime());
+        assert_eq!(500, n.mode());
+        assert_eq!(1024, n.size());
     }
 
     #[test]
@@ -549,10 +537,10 @@ mod test {
         assert!(n.is_some());
         let n = n.unwrap();
 
-        assert_eq!("a", n.path.as_str());
-        assert_eq!(Timespec::new(10, 0), n.mtime);
-        assert_eq!(500, n.mode);
-        assert_eq!(NodeKind::Dir, n.kind);
+        assert_eq!("a", n.path());
+        assert_eq!(&Timespec::new(10, 0), n.mtime());
+        assert_eq!(500, n.mode());
+        assert_eq!(NodeKind::Dir, n.kind());
     }
 
     #[test]
@@ -565,7 +553,9 @@ mod test {
         let dir = Node::new_dir("dir", mtime, 500);
         index.insert(dir).unwrap();
 
-        let file_a = Node::new_file("dir/a", mtime, 3, 500).with_hash_str("abc");
+        let file_a = Node::new_file("dir/a", mtime, 3, 500)
+            .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                            20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
         index.insert(file_a.clone()).unwrap();
 
         let list = index.list("dir").unwrap();

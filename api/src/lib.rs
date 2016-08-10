@@ -1,3 +1,4 @@
+#![deny(warnings)]
 #![feature(question_mark, box_syntax, try_from)]
 #[macro_use]
 extern crate log;
@@ -12,15 +13,19 @@ pub mod filesystem;
 pub mod engine;
 pub mod index;
 pub mod storage;
+mod node;
+
+pub use engine::EngineConfig;
+pub use node::{Node, NodeKind};
 
 use std::error::Error;
 use std::path::PathBuf;
 use std::collections::HashSet;
 use std::fs::create_dir_all;
 use rusqlite::Error as SqliteError;
-use time::Timespec;
 use rusqlite::Connection;
 use std::fmt;
+use std::borrow::Borrow;
 
 use engine::DefaultEngine;
 use filesystem::Change;
@@ -41,7 +46,7 @@ pub trait Index {
 }
 
 pub trait Storage {
-    fn send(&self, &String, Node) -> Result<Node, Box<Error>>;
+    fn send(&self, String, Node) -> Result<Node, Box<Error>>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,129 +74,86 @@ impl Record {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum NodeKind {
-    File,
-    Dir,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Node {
-    /// The backup key. Not the absolute path.
-    path: String,
-    kind: NodeKind,
-    mtime: Timespec,
-    size: u64,
-    mode: u32,
-    deleted: bool,
-    hash: Option<Vec<u8>>,
-}
-
-impl Node {
-    fn new<S>(path: S, kind: NodeKind, mtime: Timespec, size: u64, mode: u32) -> Self
-        where S: Into<String>
-    {
-        Node {
-            path: path.into(),
-            kind: kind,
-            mtime: mtime,
-            size: size,
-            mode: mode,
-            deleted: false,
-            hash: None,
-        }
-    }
-    fn new_file<S>(path: S, mtime: Timespec, size: u64, mode: u32) -> Self
-        where S: Into<String>
-    {
-        Self::new(path, NodeKind::File, mtime, size, mode)
-    }
-    fn new_dir<S>(path: S, mtime: Timespec, mode: u32) -> Self
-        where S: Into<String>
-    {
-        Self::new(path, NodeKind::Dir, mtime, 0, mode)
-    }
-    pub fn is_deleted(&self) -> bool {
-        self.deleted
-    }
-    pub fn deleted(mut self) -> Self {
-        self.deleted = true;
-        self.size = 0;
-        self.mode = 0;
-        self.mtime = time::now().to_timespec();
-        self
-    }
-    pub fn is_dir(&self) -> bool {
-        self.kind == NodeKind::Dir
-    }
-    pub fn is_file(&self) -> bool {
-        self.kind == NodeKind::File
-    }
-    pub fn with_hash_str(mut self, hash: &str) -> Self {
-        self.hash = Some(hash.as_bytes().to_vec());
-        self
-    }
-    pub fn with_hash(mut self, hash: Vec<u8>) -> Self {
-        self.hash = Some(hash);
-        self
-    }
-    pub fn has_hash(&self) -> bool {
-        self.hash.is_some()
-    }
-}
-
 #[derive(Debug)]
 pub enum HaumaruError {
     SqlLite(String, SqliteError),
     Index(Box<Error>),
     Storage(Box<Error>),
     Engine(Box<Error>),
+    Other(String),
+}
+
+impl Error for HaumaruError {
+    fn description(&self) -> &str {
+        match *self {
+            HaumaruError::SqlLite(ref _s, ref _e) => "SqlLite error",
+            HaumaruError::Index(ref _e) => "Index error",
+            HaumaruError::Storage(ref _e) => "Storage error",
+            HaumaruError::Engine(ref _e) => "Engine error",
+            HaumaruError::Other(ref s) => s,
+        }
+    }
+
+    fn cause(&self) -> Option<&Error> {
+        match *self {
+            HaumaruError::SqlLite(ref _s, ref e) => Some(e),
+            HaumaruError::Index(ref e) => Some(e.borrow()),
+            HaumaruError::Storage(ref e) => Some(e.borrow()),
+            HaumaruError::Engine(ref e) => Some(e.borrow()),
+            HaumaruError::Other(ref _s) => None,
+        }
+    }
 }
 
 impl fmt::Display for HaumaruError {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match *self {
-            HaumaruError::SqlLite(ref s, ref e) => write!(f, "{}: {}", s, e).unwrap(),
-            HaumaruError::Index(ref e) => write!(f, "{}", e).unwrap(),
-            HaumaruError::Storage(ref e) => write!(f, "{}", e).unwrap(),
-            HaumaruError::Engine(ref e) => write!(f, "{}", e).unwrap(),
+            HaumaruError::SqlLite(ref s, ref e) => write!(f, "{}: {}", s, e)?,
+            HaumaruError::Index(ref e) => write!(f, "{}", e)?,
+            HaumaruError::Storage(ref e) => write!(f, "{}", e)?,
+            HaumaruError::Engine(ref e) => write!(f, "{}", e)?,
+            HaumaruError::Other(ref e) => write!(f, "{}", e)?,
         }
         Ok(())
     }
 }
 
-pub fn run<T>(path: T) -> Result<(), HaumaruError>
-    where T: Into<String>
-{
-    let path = path.into();
+pub fn run(config: EngineConfig) -> Result<(), HaumaruError> {
 
-    let mut db_path = PathBuf::new();
-    db_path.push("target");
-    create_dir_all(&db_path).unwrap();
+    let mut pathb = PathBuf::new();
+    pathb.push(config.path());
+    let path = pathb.as_path();
+    if !path.exists() {
+        return Err(HaumaruError::Other(format!("Backup path does not exist: {}", config.path())));
+    }
+
+    let mut working_path = PathBuf::new();
+    working_path.push(config.working());
+    create_dir_all(&working_path).unwrap();
+    let working_abs = working_path.canonicalize().unwrap().to_str().unwrap().to_string();
+
+    let mut db_path = working_path.clone();
     db_path.push("haumaru.idx");
 
     let conn = Connection::open(&db_path)
         .map_err(|e| HaumaruError::SqlLite(format!("Failed to open database {:?}", db_path), e))?;
-    let db_path_abs = db_path.canonicalize().unwrap().to_str().unwrap().to_string();
 
-    let mut store_path = PathBuf::new();
-    store_path.push("target");
+    let mut store_path = working_path.clone();
     store_path.push("store");
     create_dir_all(&store_path).unwrap();
-    let store_path_abs = store_path.canonicalize().unwrap().to_str().unwrap().to_string();
 
     {
         let mut index = SqlLightIndex::new(&conn)
             .map_err(|e| HaumaruError::Index(box e))?;
 
-        let store = LocalStorage::new(store_path_abs.clone())
+        let store = LocalStorage::new(&config)
             .map_err(|e| HaumaruError::Storage(box e))?;
 
         let mut excludes = HashSet::new();
-        excludes.insert(db_path_abs);
-        excludes.insert(store_path_abs);
+        excludes.insert(working_abs);
 
-        let mut engine = DefaultEngine::new(path, excludes, &mut index, store).unwrap();
+        let mut engine = DefaultEngine::new(config, excludes, &mut index, store)
+            .map_err(|e| HaumaruError::Engine(e))?;
         engine.run().map_err(|e| HaumaruError::Engine(e))?;
     }
 
