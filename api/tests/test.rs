@@ -259,6 +259,32 @@ fn process_change_dir_then_file() {
 }
 
 #[test]
+fn process_change_deleted_recreated_file() {
+    let name = "process_change_deleted_recreated_file";
+
+    let dump = test_change(name, |engine, path| {
+
+        let filename = write_file(path.clone(), "a", "abc");
+        debug!("Created File {:?}", filename);
+        engine.process_change(Change::new(filename.clone())).unwrap();
+
+        remove_file(filename.clone()).unwrap();
+        debug!("Deleted {:?}", filename);
+        engine.process_change(Change::new(filename.clone())).unwrap();
+
+        let filename = write_file(path.clone(), "a", "abc");
+        debug!("Created File {:?}", filename);
+        engine.process_change(Change::new(filename.clone())).unwrap();
+
+    });
+
+    let v: Vec<Record> = vec![Record::new(NodeKind::File, "a".into(), 3, 420),
+                              Record::new(NodeKind::File, "a".into(), 0, 0).deleted(),
+                              Record::new(NodeKind::File, "a".into(), 3, 420)];
+    assert_eq!(v, dump);
+}
+
+#[test]
 fn scan_new_file() {
     let name = "scan_new_file";
 

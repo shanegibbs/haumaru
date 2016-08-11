@@ -105,6 +105,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
                index: &'i mut I,
                storage: S)
                -> StdResult<Self, Box<StdError>> {
+        let mut config = config;
         let path_buf = PathBuf::from(config.path())
             .canonicalize()
             .map_err(|e| {
@@ -113,8 +114,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
                                                   e))
             })?;
         let abs_path = path_buf.to_str().unwrap().to_string();
-        // let path = path.as_ref().to_path_buf();
-        // let path = path.canonicalize().unwrap();
+        config.path = abs_path.clone();
 
         debug!("Base path: {}", config.path());
         debug!("Exclude paths: {:?}", excludes);

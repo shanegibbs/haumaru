@@ -388,7 +388,7 @@ impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
             }
         };
 
-        let id = get_u64_from_row(&row, "id");
+        // let id = get_u64_from_row(&row, "id");
         let size = get_u64_from_row(&row, "size");
         let mode = get_u32_from_row(&row, "mode");
 
@@ -399,6 +399,11 @@ impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
             "D" => Node::new_dir(path_str, Timespec::new(mtime, 0), mode),
             k => return SqlLightIndexError::other(format!("Unknown kind: {}", k)),
         };
+
+        let deleted = get_bool_from_row(&row, "deleted");
+        if deleted {
+            node.set_deleted(true);
+        }
 
         match row.get_checked("hash")? {
             Value::Blob(b) => {
@@ -411,12 +416,6 @@ impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
 
         trace!("Building {:?}", node);
         node.validate();
-
-        if node.kind() == NodeKind::File && node.hash().is_none() {
-            return SqlLightIndexError::other(format!("File node({}) is missing hash: {:?}",
-                                                     id,
-                                                     node));
-        }
 
         Ok(node)
     }
@@ -479,6 +478,25 @@ mod test {
                         21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
         index.insert(n).unwrap();
+    }
+
+    #[test]
+    fn delete_file() {
+        let _ = env_logger::init();
+        let conn = Connection::open_in_memory().unwrap();
+        let mut index = SqlLightIndex::new(&conn).unwrap();
+
+        let mtime = Timespec::new(10, 0);
+        let mut n = Node::new_file("a", mtime, 1024, 500);
+        n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                        21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
+        let n = n.as_deleted();
+        let mtime = n.mtime();
+
+        index.insert(n.clone()).unwrap();
+        let mut latest = index.latest("a").expect("ok").expect("some");
+        latest.set_mtime(mtime.clone());
+        assert_eq!(n, latest);
     }
 
     #[test]

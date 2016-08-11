@@ -63,6 +63,10 @@ impl Node {
     pub fn mtime(&self) -> &Timespec {
         &self.mtime
     }
+    #[cfg(test)]
+    pub fn set_mtime(&mut self, mtime: Timespec) {
+        self.mtime = mtime;
+    }
     pub fn mode(&self) -> u32 {
         self.mode
     }
@@ -79,6 +83,9 @@ impl Node {
         self.mtime = now().to_timespec();
         self.hash = None;
         self
+    }
+    pub fn set_deleted(&mut self, deleted: bool) {
+        self.deleted = deleted;
     }
     pub fn is_dir(&self) -> bool {
         self.kind == NodeKind::Dir
