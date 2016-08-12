@@ -13,8 +13,6 @@ use std::time::UNIX_EPOCH;
 use std::os::unix::fs::PermissionsExt;
 use time::Timespec;
 use std::error::Error;
-use walkdir;
-use walkdir::WalkDir;
 
 use {Node, get_key};
 
@@ -124,42 +122,10 @@ impl BackupPath {
         Err(BackupPathError::UnknownFileType)
     }
 
-    pub fn scan(&self) -> BackupPathIter {
-        BackupPathIter::new(self.path.clone())
-    }
-
     /// Take watcher
     pub fn watcher(&mut self) -> Result<Watcher> {
         debug!("Starting watcher on {}", &self.path);
         try!(self.watcher.watch(&self.path).map_err(|e| BackupPathError::StartWatcher(e)));
         Ok(Watcher::new(self.rx.take().unwrap()))
-    }
-}
-
-/// Wraps WalkDir's iterator
-pub struct BackupPathIter {
-    iter: walkdir::Iter,
-}
-
-impl BackupPathIter {
-    fn new(path: String) -> Self {
-        BackupPathIter { iter: WalkDir::new(path).into_iter() }
-    }
-}
-
-impl Iterator for BackupPathIter {
-    type Item = Result<Change>;
-
-    fn next(&mut self) -> Option<Result<Change>> {
-        let res = match self.iter.next() {
-            None => return None,
-            Some(r) => r,
-        };
-        let dir = match res {
-            Err(e) => return Some(Err(BackupPathError::Scan(format!("Scan error: {}", e)))),
-            Ok(d) => d,
-        };
-
-        Some(Ok(Change::new(dir.path().to_path_buf())))
     }
 }

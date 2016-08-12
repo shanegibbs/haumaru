@@ -7,7 +7,6 @@ extern crate time;
 extern crate rusqlite;
 extern crate crypto;
 extern crate rustc_serialize;
-extern crate walkdir;
 
 pub mod filesystem;
 pub mod engine;
