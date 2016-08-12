@@ -10,6 +10,7 @@ pub struct Node {
     mode: u32,
     deleted: bool,
     hash: Option<Vec<u8>>,
+    backup_set: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +31,7 @@ impl Node {
             mode: mode,
             deleted: false,
             hash: None,
+            backup_set: None,
         }
     }
     pub fn new_file<S>(path: S, mtime: Timespec, size: u64, mode: u32) -> Self
@@ -96,6 +98,16 @@ impl Node {
     pub fn has_hash(&self) -> bool {
         self.hash.is_some()
     }
+    pub fn backup_set(&self) -> Option<u64> {
+        self.backup_set.clone()
+    }
+    pub fn set_backup_set(&mut self, backup_set: u64) {
+        self.backup_set = Some(backup_set);
+    }
+    pub fn with_backup_set(mut self, backup_set: u64) -> Self {
+        self.backup_set = Some(backup_set);
+        self
+    }
     pub fn validate(&self) {
         if let Some(ref hash) = self.hash.as_ref() {
             assert_eq!(32, hash.len(), "hash size: {:?}", self);
@@ -116,6 +128,9 @@ impl Node {
             }
             assert_eq!(0, self.size, "Dir has file size");
         }
+        if self.backup_set.is_none() {
+            panic!("Node has no backup_set: {:?}", self);
+        }
     }
 }
 
@@ -130,7 +145,25 @@ mod test {
     fn validate_file() {
         let n = Node::new_file("a", Timespec::new(10, 0), 1024, 500)
             .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                            20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31])
+            .with_backup_set(5);
+        n.validate();
+    }
+
+    #[test]
+    #[should_panic]
+    fn missing_backup_set() {
+        let n = Node::new_file("a", Timespec::new(10, 0), 1024, 500)
+            .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
         n.validate();
     }
+
+    #[test]
+    #[should_panic]
+    fn missing_hash() {
+        let n = Node::new_file("a", Timespec::new(10, 0), 1024, 500).with_backup_set(5);
+        n.validate();
+    }
+
 }

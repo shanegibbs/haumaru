@@ -50,6 +50,14 @@ impl fmt::Display for SqlLightIndexError {
     }
 }
 
+static CREATE_TABLE_BACKUP_SET_SQL: &'static str = "
+    CREATE TABLE IF NOT EXISTS backup_set (
+    id INTEGER PRIMARY KEY,
+    at INTEGER NOT NULL
+    )";
+
+static INSERT_BACKUP_SET_SQL: &'static str = "INSERT INTO backup_set (at) VALUES (?)";
+
 static CREATE_TABLE_PATH_SQL: &'static str = "
     CREATE TABLE IF NOT EXISTS path (
     id INTEGER PRIMARY KEY,
@@ -68,6 +76,7 @@ static INSERT_PATH_SQL: &'static str = "INSERT INTO path (path) VALUES (?)";
 static CREATE_TABLE_NODE_SQL: &'static str = "
     CREATE TABLE IF NOT EXISTS node (
     id INTEGER PRIMARY KEY,
+    backup_set_id INTEGER NOT NULL,
     parent_id INTEGER NOT NULL,
     path_id INTEGER NOT NULL,
     kind CHAR(1) NOT NULL,
@@ -88,10 +97,15 @@ static CREATE_INDEX_NODE_PARENT_ID_SQL: &'static str = "
     ON node (parent_id);
     ";
 
+static CREATE_INDEX_NODE_BACKUP_SET_ID_SQL: &'static str = "
+    CREATE INDEX IF NOT EXISTS node_backup_set_id_index
+    ON node (backup_set_id);
+    ";
+
 static INSERT_NODE_SQL: &'static str = "
     INSERT INTO node
-    (parent_id, path_id, kind, mtime, size, mode, deleted, hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    (backup_set_id, parent_id, path_id, kind, mtime, size, mode, deleted, hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 static GET_LATEST_QUERY_SQL: &'static str = "
     SELECT *
@@ -103,7 +117,7 @@ static GET_LATEST_QUERY_SQL: &'static str = "
     LIMIT 1";
 
 static LIST_PATH_QUERY_SQL: &'static str = "
-    SELECT node.id as id, path.path, node.kind, node.mtime, node.size, node.mode,
+    SELECT node.id as id, path.path, backup_set_id, node.kind, node.mtime, node.size, node.mode,
         node.deleted, node.hash
     FROM node
     INNER JOIN path
@@ -132,12 +146,20 @@ pub struct SqlLightIndex<'a> {
     insert_node: Statement<'a>,
     get_latest: Statement<'a>,
     list_path: Statement<'a>,
+    insert_backup_set: Statement<'a>,
 }
 
 impl<'a> SqlLightIndex<'a> {
     pub fn new(conn: &'a Connection) -> Result<Self, SqlLightIndexError> {
+
+        conn.execute(CREATE_TABLE_BACKUP_SET_SQL, &[])
+            .map_err(|e| SqlLightIndexError::CreateTable("backup_set".to_string(), e))?;
+
         conn.execute(CREATE_TABLE_PATH_SQL, &[])
             .map_err(|e| SqlLightIndexError::CreateTable("path".to_string(), e))?;
+
+        let insert_backup_set = try!(conn.prepare(INSERT_BACKUP_SET_SQL)
+            .map_err(|e| SqlLightIndexError::CreateStatement("insert_backup_set".to_string(), e)));
 
         conn.execute(CREATE_INDEX_PATH_SQL, &[])
             .map_err(|e| SqlLightIndexError::CreateTable("path_index".to_string(), e))?;
@@ -150,6 +172,9 @@ impl<'a> SqlLightIndex<'a> {
 
         try!(conn.execute(CREATE_TABLE_NODE_SQL, &[])
             .map_err(|e| SqlLightIndexError::CreateTable("node".to_string(), e)));
+
+        conn.execute(CREATE_INDEX_NODE_BACKUP_SET_ID_SQL, &[])
+            .map_err(|e| SqlLightIndexError::CreateTable("node_backup_set".to_string(), e))?;
 
         conn.execute(CREATE_INDEX_NODE_PATH_ID_SQL, &[])
             .map_err(|e| SqlLightIndexError::CreateTable("node_index".to_string(), e))?;
@@ -173,6 +198,7 @@ impl<'a> SqlLightIndex<'a> {
             insert_node: insert_node,
             get_latest: get_latest,
             list_path: list_path,
+            insert_backup_set: insert_backup_set,
         })
     }
 
@@ -302,8 +328,11 @@ impl<'a> Index for SqlLightIndex<'a> {
 
             let mode = node.mode() as i64;
 
+            let backup_set_id = node.backup_set().expect("node backup_set") as i64;
+
             self.insert_node
-                .execute(&[&parent_id,
+                .execute(&[&backup_set_id,
+                           &parent_id,
                            &id,
                            &kind,
                            &node.mtime().sec,
@@ -316,6 +345,10 @@ impl<'a> Index for SqlLightIndex<'a> {
                 })?;
         }
         Ok(node)
+    }
+
+    fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, Box<Error>> {
+        Ok(self.insert_backup_set.insert(&[&timestamp])? as u64)
     }
 
     fn dump(&self) -> Vec<Record> {
@@ -389,16 +422,18 @@ impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
         };
 
         // let id = get_u64_from_row(&row, "id");
+        let backup_set_id = get_u64_from_row(&row, "backup_set_id");
         let size = get_u64_from_row(&row, "size");
         let mode = get_u32_from_row(&row, "mode");
 
         let kind_char = get_string_from_row(&row, "kind");
 
         let mut node = match kind_char.as_ref() {
-            "F" => Node::new_file(path_str, Timespec::new(mtime, 0), size, mode),
-            "D" => Node::new_dir(path_str, Timespec::new(mtime, 0), mode),
-            k => return SqlLightIndexError::other(format!("Unknown kind: {}", k)),
-        };
+                "F" => Node::new_file(path_str, Timespec::new(mtime, 0), size, mode),
+                "D" => Node::new_dir(path_str, Timespec::new(mtime, 0), mode),
+                k => return SqlLightIndexError::other(format!("Unknown kind: {}", k)),
+            }
+            .with_backup_set(backup_set_id);
 
         let deleted = get_bool_from_row(&row, "deleted");
         if deleted {
@@ -473,7 +508,7 @@ mod test {
         let mut index = SqlLightIndex::new(&conn).unwrap();
 
         let mtime = Timespec::new(10, 0);
-        let mut n = Node::new_file("a", mtime, 1024, 500);
+        let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(5);
         n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
                         21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
@@ -487,7 +522,7 @@ mod test {
         let mut index = SqlLightIndex::new(&conn).unwrap();
 
         let mtime = Timespec::new(10, 0);
-        let mut n = Node::new_file("a", mtime, 1024, 500);
+        let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(5);
         n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
                         21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
         let n = n.as_deleted();
@@ -506,12 +541,14 @@ mod test {
         let mut index = SqlLightIndex::new(&conn).unwrap();
 
         let n = Node::new_file("a", Timespec::new(10, 0), 1024, 500)
+            .with_backup_set(5)
             .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
         index.insert(n.clone()).unwrap();
 
         let n = Node::new_file("a", Timespec::new(11, 0), 1024, 500)
+            .with_backup_set(6)
             .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
         index.insert(n).unwrap();
@@ -524,7 +561,7 @@ mod test {
         let mut index = SqlLightIndex::new(&conn).unwrap();
 
         let mtime = Timespec::new(10, 0);
-        let mut n = Node::new_file("a", mtime, 1024, 500);
+        let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(5);
         n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
                         21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
@@ -547,7 +584,7 @@ mod test {
         let mut index = SqlLightIndex::new(&conn).unwrap();
 
         let mtime = Timespec::new(10, 0);
-        let n = Node::new_dir("a", mtime, 500);
+        let n = Node::new_dir("a", mtime, 500).with_backup_set(5);
 
         index.insert(n).unwrap();
 
@@ -555,6 +592,7 @@ mod test {
         assert!(n.is_some());
         let n = n.unwrap();
 
+        assert_eq!(Some(5), n.backup_set());
         assert_eq!("a", n.path());
         assert_eq!(&Timespec::new(10, 0), n.mtime());
         assert_eq!(500, n.mode());
@@ -568,10 +606,11 @@ mod test {
         let mut index = SqlLightIndex::new(&conn).unwrap();
 
         let mtime = Timespec::new(10, 0);
-        let dir = Node::new_dir("dir", mtime, 500);
+        let dir = Node::new_dir("dir", mtime, 500).with_backup_set(5);
         index.insert(dir).unwrap();
 
         let file_a = Node::new_file("dir/a", mtime, 3, 500)
+            .with_backup_set(5)
             .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
         index.insert(file_a.clone()).unwrap();
@@ -589,7 +628,7 @@ mod test {
         let mut index = SqlLightIndex::new(&conn).unwrap();
 
         let mtime = Timespec::new(10, 0);
-        let n = Node::new_dir("a", mtime, 500);
+        let n = Node::new_dir("a", mtime, 500).with_backup_set(5);
 
         index.insert(n.clone()).unwrap();
 

@@ -10,6 +10,8 @@ use std::fmt::{Formatter, Display};
 use std::fmt::Error as FmtError;
 use std::time::Duration;
 use std::num::ParseIntError;
+use time;
+use time::Timespec;
 
 use filesystem::Change;
 use {Engine, Index, Storage, get_key};
@@ -131,7 +133,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
         })
     }
 
-    pub fn scan(&mut self) -> StdResult<(), Box<StdError>> {
+    pub fn scan(&mut self, backup_set: u64) -> StdResult<(), Box<StdError>> {
         info!("Beginning full scan");
 
         use std::collections::VecDeque;
@@ -162,7 +164,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
 
                 let entry_path = entry.path();
 
-                self.process_change(Change::new(entry_path.clone()))?;
+                self.process_change(backup_set, Change::new(entry_path.clone()))?;
 
                 if entry_path.is_dir() {
                     debug!("Scan dir  {:?}", entry_path);
@@ -198,7 +200,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
                     let mut change_path = PathBuf::new();
                     change_path.push(self.config.path());
                     change_path.push(&known_node.path());
-                    self.process_change(Change::new(change_path))?;
+                    self.process_change(backup_set, Change::new(change_path))?;
                 }
             }
 
@@ -258,16 +260,25 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
             });
         }
 
-        self.scan()?;
+        {
+            let now = time::now_utc().to_timespec();
+            let backup_set = self.index.create_backup_set(now.sec)?;
+            self.scan(backup_set)?;
+        }
 
         loop {
-            use time;
-            use time::Timespec;
-
             let now = time::now_utc().to_timespec();
             let seconds_div = (now.sec / self.config.period() as i64) as i64;
             let seconds = (seconds_div + 1) * self.config.period() as i64;
             let next_time = Timespec::new(seconds, 0);
+
+            loop {
+                let now = time::now_utc().to_timespec();
+                if now >= next_time {
+                    break;
+                }
+                sleep(Duration::new(1, 0));
+            }
 
             info!("Beginning backup run");
 
@@ -280,21 +291,17 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                 }
             }
 
-            for change in work_queue {
-                self.process_change(change).unwrap();
+            if work_queue.len() > 0 {
+                let backup_set = self.index.create_backup_set(next_time.sec)?;
+                for change in work_queue {
+                    self.process_change(backup_set, change).unwrap();
+                }
             }
 
-            loop {
-                let now = time::now_utc().to_timespec();
-                if now >= next_time {
-                    break;
-                }
-                sleep(Duration::new(1, 0));
-            }
         }
     }
 
-    fn process_change(&mut self, change: Change) -> StdResult<(), Box<StdError>> {
+    fn process_change(&mut self, backup_set: u64, change: Change) -> StdResult<(), Box<StdError>> {
         if is_excluded(&self.excludes, &change, self.config.path()) {
             trace!("Skipping excluded path: {:?}", change.path());
             return Ok(());
@@ -323,7 +330,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                         info!("- {}", key);
                         debug!("Detected DELETE on {:?}, {:?}", change, existing_node);
                         self.index
-                            .insert(existing_node.as_deleted())
+                            .insert(existing_node.as_deleted().with_backup_set(backup_set))
                             .map_err(|e| DefaultEngineError::Index(e))?;
                     }
                 }
@@ -353,7 +360,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                             }
                         };
                         let _inserted_file = try!(self.index
-                            .insert(sent_file)
+                            .insert(sent_file.with_backup_set(backup_set))
                             .map_err(|e| DefaultEngineError::Index(e)));
                     }
                     Some(existing_node) => {
@@ -390,7 +397,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                             }
                         };
                         let _inserted_file = try!(self.index
-                            .insert(sent_file)
+                            .insert(sent_file.with_backup_set(backup_set))
                             .map_err(|e| DefaultEngineError::Index(e)));
                     }
                 }

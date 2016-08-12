@@ -34,13 +34,14 @@ use storage::LocalStorage;
 
 pub trait Engine {
     fn run(&mut self) -> Result<u64, Box<Error>>;
-    fn process_change(&mut self, change: Change) -> Result<(), Box<Error>>;
+    fn process_change(&mut self, backup_set: u64, change: Change) -> Result<(), Box<Error>>;
 }
 
 pub trait Index {
     fn latest<S: Into<String>>(&mut self, path: S) -> Result<Option<Node>, Box<Error>>;
     fn list<S: Into<String>>(&mut self, path: S) -> Result<Vec<Node>, Box<Error>>;
     fn insert(&mut self, Node) -> Result<Node, Box<Error>>;
+    fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, Box<Error>>;
 
     fn dump(&self) -> Vec<Record>;
 }

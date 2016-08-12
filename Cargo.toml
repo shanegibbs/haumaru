@@ -9,3 +9,8 @@ log = "*"
 env_logger = "*"
 time = "*"
 clap = "*"
+
+[[bin]]
+doc = false
+name = "haumaru"
+path = "src/bin/haumaru.rs"
