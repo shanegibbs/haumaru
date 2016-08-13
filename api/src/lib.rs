@@ -34,11 +34,14 @@ use storage::LocalStorage;
 pub trait Engine {
     fn run(&mut self) -> Result<u64, Box<Error>>;
     fn process_change(&mut self, backup_set: u64, change: Change) -> Result<(), Box<Error>>;
+    fn verify_store(&mut self) -> Result<(), Box<Error>>;
 }
 
 pub trait Index {
     fn latest<S: Into<String>>(&mut self, path: S) -> Result<Option<Node>, Box<Error>>;
     fn list<S: Into<String>>(&mut self, path: S) -> Result<Vec<Node>, Box<Error>>;
+    fn visit_all_hashable<F>(&mut self, mut f: F) -> Result<(), Box<Error>>
+        where F: FnMut(Node) -> Result<(), Box<Error>>;
     fn insert(&mut self, Node) -> Result<Node, Box<Error>>;
     fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, Box<Error>>;
 
@@ -47,6 +50,7 @@ pub trait Index {
 
 pub trait Storage {
     fn send(&self, String, Node) -> Result<Node, Box<Error>>;
+    fn verify(&self, Node) -> Result<Option<Node>, Box<Error>>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -156,6 +160,25 @@ pub fn run(config: EngineConfig) -> Result<(), HaumaruError> {
             .map_err(|e| HaumaruError::Engine(e))?;
         engine.run().map_err(|e| HaumaruError::Engine(e))?;
     }
+
+    Ok(())
+}
+
+pub fn verify(config: EngineConfig) -> Result<(), HaumaruError> {
+
+    let conn = SqlLightIndex::open_database(&config).map_err(|e| HaumaruError::Index(box e))?;
+    let mut index = SqlLightIndex::new(&conn)
+        .map_err(|e| HaumaruError::Index(box e))?;
+
+    let store = LocalStorage::new(&config)
+        .map_err(|e| HaumaruError::Storage(box e))?;
+
+    let mut excludes = HashSet::new();
+    excludes.insert(config.abs_working().to_str().unwrap().to_string());
+
+    let mut engine = DefaultEngine::new(config, excludes, &mut index, store)
+        .map_err(|e| HaumaruError::Engine(e))?;
+    engine.verify_store().map_err(|e| HaumaruError::Engine(e))?;
 
     Ok(())
 }

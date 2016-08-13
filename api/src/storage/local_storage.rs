@@ -2,7 +2,6 @@ use std::error::Error;
 use std::fmt;
 use crypto::digest::Digest;
 use crypto::sha2::Sha256;
-use rustc_serialize::hex::ToHex;
 use std::path::PathBuf;
 use std::fs::File;
 use std::io;
@@ -94,7 +93,7 @@ impl Storage for LocalStorage {
 
         {
             let mut src_file = File::open(path)?;
-            let mut buffer = [0; 32768];
+            let mut buffer = [0; 65536];
 
             loop {
                 let read = src_file.read(&mut buffer[..])?;
@@ -116,9 +115,7 @@ impl Storage for LocalStorage {
         n.set_hash(vec);
 
         // hex string
-        let hex_b = n.hash().as_ref().unwrap().clone();
-        let hex_slice = hex_b.as_slice();
-        let hex: String = hex_slice.to_hex();
+        let hex = n.hash_string();
 
         // move into final name
         let mut dir = PathBuf::new();
@@ -155,6 +152,47 @@ impl Storage for LocalStorage {
         }
 
         Ok(n)
+    }
+
+    fn verify(&self, node: Node) -> Result<Option<Node>, Box<Error>> {
+        trace!("store.verify {:?}", node);
+
+        let hex = node.hash_string();
+        let mut hash_filename = PathBuf::new();
+        hash_filename.push(&self.target);
+        hash_filename.push(hash_path(&hex));
+
+        if !hash_filename.exists() {
+            error!("Hash missing: {}", hex);
+            return Ok(Some(node));
+        }
+
+        let mut src_file = File::open(hash_filename)?;
+        let mut hasher = Sha256::new();
+
+        let mut buffer = [0; 65536];
+
+        loop {
+            let read = src_file.read(&mut buffer[..])?;
+            if read == 0 {
+                break;
+            }
+
+            trace!("Read {} bytes", read);
+            hasher.input(&buffer[0..read]);
+        }
+
+        let mut bytes = [0u8; 32];
+        hasher.result(&mut bytes);
+        let mut vec = Vec::with_capacity(32);
+        vec.append(&mut bytes.to_vec());
+
+        if vec != node.hash().clone().expect("can not validate without hash") {
+            error!("Hash checksum failed: {}", hex);
+            return Ok(Some(node));
+        }
+
+        Ok(None)
     }
 }
 

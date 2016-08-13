@@ -66,6 +66,16 @@ fn app<'a, 'b>() -> App<'a, 'b> {
                 .help("Number of seconds between backups")
                 .default_value("900")
                 .takes_value(true)
+                .required(true)))
+        .subcommand(SubCommand::with_name("verify")
+            .about("Verify backup integrity")
+            .arg(Arg::with_name("working")
+                .long("working")
+                .short("w")
+                .value_name("PATH")
+                .help("Working path for haumaru")
+                .default_value(".haumaru/working")
+                .takes_value(true)
                 .required(true)));
 }
 
@@ -81,6 +91,10 @@ fn run() -> Result<i64, Box<Error>> {
         let interval = cmd.value_of("interval").ok_or(CliError::Missing("interval".to_string()))?;
         let config = haumaru_api::EngineConfig::new(path, working, interval)?;
         haumaru_api::run(config)?;
+    } else if let Some(cmd) = matches.subcommand_matches("verify") {
+        let working = cmd.value_of("working").ok_or(CliError::Missing("working".to_string()))?;
+        let config = haumaru_api::EngineConfig::new_detached(working);
+        haumaru_api::verify(config)?;
     } else {
         app().print_help().unwrap();
         println!("");

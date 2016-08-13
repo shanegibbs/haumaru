@@ -17,15 +17,17 @@ use rusqlite::types::Value;
 use std::path::Path;
 use std::convert::{TryFrom, TryInto};
 
-use {Node, NodeKind, Index, Record};
+use {EngineConfig, Node, NodeKind, Index, Record};
 
 #[derive(Debug)]
 pub enum SqlLightIndexError {
+    Connect(String, SqlError),
     CreateTable(String, SqlError),
     CreateStatement(String, SqlError),
     IllegalArgument(String, Option<Node>),
     FailedStatement(String, SqlError),
     FailedNodeStatement(String, Node, SqlError),
+    NodeParse(String, Box<Error>),
     Other(String),
 }
 
@@ -107,6 +109,14 @@ static INSERT_NODE_SQL: &'static str = "
     (backup_set_id, parent_id, path_id, kind, mtime, size, mode, deleted, hash)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
+static GET_ALL_HASHABLE_QUERY_SQL: &'static str = "
+    SELECT *
+    FROM node
+    INNER JOIN path
+    ON path.id = node.path_id
+    WHERE node.hash is not null
+    ORDER BY node.id DESC";
+
 static GET_LATEST_QUERY_SQL: &'static str = "
     SELECT *
     FROM node
@@ -144,12 +154,22 @@ pub struct SqlLightIndex<'a> {
     insert_path: Statement<'a>,
     select_path: Statement<'a>,
     insert_node: Statement<'a>,
+    get_all_hashable: Statement<'a>,
     get_latest: Statement<'a>,
     list_path: Statement<'a>,
     insert_backup_set: Statement<'a>,
 }
 
 impl<'a> SqlLightIndex<'a> {
+    pub fn open_database(config: &EngineConfig) -> Result<Connection, SqlLightIndexError> {
+        let mut db_path = config.abs_working();
+        db_path.push("haumaru.idx");
+
+        Ok(Connection::open(&db_path)
+            .map_err(|e| {
+                SqlLightIndexError::Connect(format!("Failed to open database {:?}", db_path), e)
+            })?)
+    }
     pub fn new(conn: &'a Connection) -> Result<Self, SqlLightIndexError> {
 
         conn.execute(CREATE_TABLE_BACKUP_SET_SQL, &[])
@@ -185,6 +205,9 @@ impl<'a> SqlLightIndex<'a> {
         let insert_node = try!(conn.prepare(INSERT_NODE_SQL)
             .map_err(|e| SqlLightIndexError::CreateStatement("insert_node".to_string(), e)));
 
+        let get_all_hashable = conn.prepare(GET_ALL_HASHABLE_QUERY_SQL)
+            .map_err(|e| SqlLightIndexError::CreateStatement("get_all_hashable".to_string(), e))?;
+
         let get_latest = try!(conn.prepare(GET_LATEST_QUERY_SQL)
             .map_err(|e| SqlLightIndexError::CreateStatement("get_latest".to_string(), e)));
 
@@ -196,6 +219,7 @@ impl<'a> SqlLightIndex<'a> {
             insert_path: insert_path,
             select_path: select_path,
             insert_node: insert_node,
+            get_all_hashable: get_all_hashable,
             get_latest: get_latest,
             list_path: list_path,
             insert_backup_set: insert_backup_set,
@@ -252,6 +276,25 @@ impl<'a> SqlLightIndex<'a> {
 }
 
 impl<'a> Index for SqlLightIndex<'a> {
+    fn visit_all_hashable<F>(&mut self, mut f: F) -> Result<(), Box<Error>>
+        where F: FnMut(Node) -> Result<(), Box<Error>>
+    {
+        trace!("Listing all hashable");
+
+        let mut rows = self.get_all_hashable
+            .query(&[])
+            .map_err(|e| {
+                SqlLightIndexError::FailedStatement(format!("list_all_hashable failed"), e)
+            })?;
+
+        while let Some(row) = rows.next() {
+            let row = row?;
+            f(row.try_into()?)?;
+        }
+
+        Ok(())
+    }
+
     fn latest<S: Into<String>>(&mut self, path: S) -> Result<Option<Node>, Box<Error>> {
         let path = path.into();
 

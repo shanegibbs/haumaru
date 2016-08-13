@@ -1,4 +1,5 @@
 use time::{now, Timespec};
+use rustc_serialize::hex::ToHex;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
@@ -97,6 +98,11 @@ impl Node {
     }
     pub fn has_hash(&self) -> bool {
         self.hash.is_some()
+    }
+    pub fn hash_string(&self) -> String {
+        let hex_b = self.hash().as_ref().expect("hash missing").clone();
+        let hex_slice = hex_b.as_slice();
+        hex_slice.to_hex()
     }
     pub fn backup_set(&self) -> Option<u64> {
         self.backup_set.clone()

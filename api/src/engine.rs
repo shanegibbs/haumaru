@@ -12,34 +12,56 @@ use std::time::Duration;
 use std::num::ParseIntError;
 use time;
 use time::Timespec;
+use std::fs::create_dir_all;
 
 use filesystem::Change;
 use {Engine, Index, Storage, get_key};
 
 #[derive(Debug)]
 pub struct EngineConfig {
-    path: String,
+    path: Option<String>,
     working: String,
-    period: u32,
+    period: Option<u32>,
+    detached: bool,
 }
 
 impl EngineConfig {
+    /// Create new config
     pub fn new(path: &str, working: &str, period: &str) -> StdResult<Self, ParseIntError> {
         let period = period.parse::<u32>()?;
         Ok(EngineConfig {
-            path: path.to_string(),
+            path: Some(path.to_string()),
             working: working.to_string(),
-            period: period,
+            period: Some(period),
+            detached: false,
         })
     }
+    /// Create config for running without a backup path (for e.g. verify)
+    pub fn new_detached(working: &str) -> EngineConfig {
+        EngineConfig {
+            path: None,
+            working: working.to_string(),
+            period: None,
+            detached: true,
+        }
+    }
     pub fn path(&self) -> &str {
-        &self.path
+        self.path.as_ref().expect("path not specified")
     }
     pub fn working(&self) -> &str {
         &self.working
     }
+    pub fn abs_working(&self) -> PathBuf {
+        let mut working_path = PathBuf::new();
+        working_path.push(self.working());
+        create_dir_all(&working_path).unwrap();
+        working_path.canonicalize().expect("Failed to get absolute path to working directory")
+    }
     pub fn period(&self) -> u32 {
-        self.period
+        self.period.expect("period not specified")
+    }
+    pub fn is_detached(&self) -> bool {
+        self.detached
     }
 }
 
@@ -95,7 +117,7 @@ pub struct DefaultEngine<'i, I, S>
     excludes: HashSet<String>,
     index: &'i mut I,
     storage: S,
-    backup_path: BackupPath,
+    backup_path: Option<BackupPath>,
 }
 
 impl<'i, I, S> DefaultEngine<'i, I, S>
@@ -107,30 +129,47 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
                index: &'i mut I,
                storage: S)
                -> StdResult<Self, Box<StdError>> {
-        let mut config = config;
-        let path_buf = PathBuf::from(config.path())
-            .canonicalize()
-            .map_err(|e| {
-                DefaultEngineError::Other(format!("Unable to canonicalize backup path {}: {}",
-                                                  config.path(),
-                                                  e))
-            })?;
-        let abs_path = path_buf.to_str().unwrap().to_string();
-        config.path = abs_path.clone();
 
-        debug!("Base path: {}", config.path());
-        debug!("Exclude paths: {:?}", excludes);
+        if config.is_detached() {
+            Ok(DefaultEngine {
+                config: config,
+                excludes: excludes,
+                index: index,
+                storage: storage,
+                backup_path: None,
+            })
 
-        let bp = try!(BackupPath::new(abs_path.clone())
-            .map_err(|e| DefaultEngineError::CreateBackupPath(e)));
+        } else {
 
-        Ok(DefaultEngine {
-            config: config,
-            excludes: excludes,
-            index: index,
-            storage: storage,
-            backup_path: bp,
-        })
+            let mut config = config;
+            let path_buf = PathBuf::from(config.path())
+                .canonicalize()
+                .map_err(|e| {
+                    DefaultEngineError::Other(format!("Unable to canonicalize backup path {}: {}",
+                                                      config.path(),
+                                                      e))
+                })?;
+            let abs_path = path_buf.to_str().unwrap().to_string();
+            config.path = Some(abs_path.clone());
+
+            debug!("Base path: {}", config.path());
+            debug!("Exclude paths: {:?}", excludes);
+
+            let bp = try!(BackupPath::new(abs_path.clone())
+                .map_err(|e| DefaultEngineError::CreateBackupPath(e)));
+
+            Ok(DefaultEngine {
+                config: config,
+                excludes: excludes,
+                index: index,
+                storage: storage,
+                backup_path: Some(bp),
+            })
+        }
+    }
+
+    pub fn backup_path(&mut self) -> &mut BackupPath {
+        self.backup_path.as_mut().expect("some BackupPath")
     }
 
     pub fn scan(&mut self, backup_set: u64) -> StdResult<(), Box<StdError>> {
@@ -236,7 +275,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
 
         {
             let watcher =
-                try!(self.backup_path.watcher().map_err(|e| DefaultEngineError::StartWatcher(e)));
+                self.backup_path().watcher().map_err(|e| DefaultEngineError::StartWatcher(e))?;
             let changes = changes.clone();
             let local_excludes = self.excludes.clone();
             let local_path = self.config.path().to_string();
@@ -313,12 +352,12 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
         let key = get_key(self.config.path(), change_path_str);
         debug!("Change key = {}", key);
 
-        let node = try!(self.index
+        let node = self.index
             .latest(key.clone())
-            .map_err(|e| DefaultEngineError::Index(e)));
-        let file = try!(self.backup_path
+            .map_err(|e| DefaultEngineError::Index(e))?;
+        let file = self.backup_path()
             .get_file(change.path())
-            .map_err(|e| DefaultEngineError::GetFile(e)));
+            .map_err(|e| DefaultEngineError::GetFile(e))?;
 
         match file {
             None => {
@@ -402,6 +441,27 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                     }
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    fn verify_store(&mut self) -> StdResult<(), Box<StdError>> {
+        info!("Verifying store");
+        let mut failed = vec![];
+        let storage = &self.storage;
+
+        self.index
+            .visit_all_hashable(|node| {
+                if let Some(node) = storage.verify(node)? {
+                    debug!("Verification failed for {:?}", node);
+                    failed.push(node);
+                }
+                Ok(())
+            })?;
+
+        if failed.is_empty() {
+            info!("Verification OK");
         }
 
         Ok(())
