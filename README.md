@@ -5,7 +5,6 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 ## TODO
 
 ### Primary
-* Restore
 * List
 * Config file
 * S3 upload (hashes and backup_set records)
@@ -19,9 +18,10 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 * Overhaul errors
 * Handle database locked errors
 * Encryption
+* Remove un-indexed hashes from store.
 
 ## Done
-
+* ~~Restore~~
 * ~~Storage verification~~
 * ~~Backup Sets~~
 * ~~Predictable backup times~~

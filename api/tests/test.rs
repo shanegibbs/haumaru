@@ -414,7 +414,7 @@ fn restore_file_from_root() {
 
 #[test]
 fn restore_file_from_dir() {
-    let name = "restore_file";
+    let name = "restore_file_from_dir";
     test_change(name, |engine, path| {
 
         let mut dir = path.clone();
@@ -444,14 +444,113 @@ fn restore_file_from_dir() {
     });
 }
 
-#[ignore]
 #[test]
-fn restore_dir_from_root() {}
+fn restore_dir_from_root() {
+    let name = "restore_dir_from_root";
+    test_change(name, |engine, path| {
 
-#[ignore]
-#[test]
-fn restore_dir_from_dir() {}
+        let mut dir = path.clone();
+        dir.push("dir");
+        create_dir_all(dir.clone()).unwrap();
+        debug!("Created {:?}", dir);
 
-#[ignore]
+        let filename = write_file(dir.clone(), "a", "abc");
+        debug!("Created {:?}", filename);
+
+        engine.scan(5).unwrap();
+
+        let mut restore_path = path.clone();
+        restore_path.push("restore");
+        create_dir_all(&restore_path).expect("mkdir restore");
+        let restore_path_str = &restore_path.to_str().expect("Path to_str");
+
+        engine.restore("dir", restore_path_str).expect("engine restore");
+
+        let mut restored_file = restore_path.clone();
+        restored_file.push("dir");
+        restored_file.push("a");
+
+        let mut f = File::open(restored_file).expect("open a");
+        let mut content = String::new();
+        f.read_to_string(&mut content).expect("read_to_string");
+        assert_eq!(content, "abc");
+    });
+}
+
 #[test]
-fn full_restore() {}
+fn restore_dir_from_dir() {
+    let name = "restore_dir_from_dir";
+    test_change(name, |engine, path| {
+
+        let mut dir = path.clone();
+        dir.push("dirA");
+        dir.push("dirB");
+        create_dir_all(dir.clone()).unwrap();
+        debug!("Created {:?}", dir);
+
+        let filename = write_file(dir.clone(), "a", "abc");
+        debug!("Created {:?}", filename);
+
+        engine.scan(5).unwrap();
+
+        let mut restore_path = path.clone();
+        restore_path.push("restore");
+        create_dir_all(&restore_path).expect("mkdir restore");
+        let restore_path_str = &restore_path.to_str().expect("Path to_str");
+
+        engine.restore("dirA/dirB", restore_path_str).expect("engine restore");
+
+        let mut restored_file = restore_path.clone();
+        restored_file.push("dirB");
+        restored_file.push("a");
+
+        let mut f = File::open(restored_file).expect("open a");
+        let mut content = String::new();
+        f.read_to_string(&mut content).expect("read_to_string");
+        assert_eq!(content, "abc");
+    });
+}
+
+#[test]
+fn full_restore() {
+    let name = "full_restore";
+    test_change(name, |engine, path| {
+
+        let mut dir = path.clone();
+        dir.push("dirA");
+        dir.push("dirB");
+        create_dir_all(dir.clone()).unwrap();
+        debug!("Created {:?}", dir);
+
+        let filename = write_file(dir.clone(), "a", "abc");
+        debug!("Created {:?}", filename);
+
+        let filename = write_file(dir.clone(), "b", "def");
+        debug!("Created {:?}", filename);
+
+        let filename = write_file(dir.clone(), "c", "ghi");
+        debug!("Created {:?}", filename);
+
+        engine.scan(5).unwrap();
+
+        let mut restore_path = path.clone();
+        restore_path.push("restore");
+        create_dir_all(&restore_path).expect("mkdir restore");
+        let restore_path_str = &restore_path.to_str().expect("Path to_str");
+
+        engine.restore("", restore_path_str).expect("engine restore");
+
+        {
+            let mut restored_file = restore_path.clone();
+            restored_file.push("dirA");
+            restored_file.push("dirB");
+            restored_file.push("a");
+
+            let mut f = File::open(restored_file).expect("open a");
+            let mut content = String::new();
+            f.read_to_string(&mut content).expect("read_to_string");
+            assert_eq!(content, "abc");
+        }
+
+    });
+}

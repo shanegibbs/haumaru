@@ -78,7 +78,7 @@ fn app<'a, 'b>() -> App<'a, 'b> {
                 .takes_value(true)
                 .required(true)))
         .subcommand(SubCommand::with_name("restore")
-            .about("Restore file(s) to target")
+            .about("Restore file(s)")
             .arg(Arg::with_name("key")
                 .long("key")
                 .short("k")

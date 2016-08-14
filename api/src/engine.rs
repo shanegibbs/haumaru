@@ -254,7 +254,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
         Ok(())
     }
 
-    fn restore_node(&self,
+    fn restore_node(&mut self,
                     node: Node,
                     node_base: &str,
                     target: &str)
@@ -276,6 +276,9 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
         if node.is_dir() {
             debug!("Creating dir {:?}", restore_path);
             create_dir_all(restore_path)?;
+            for node in self.index.list(node.path())? {
+                self.restore_node(node, node_base, target)?;
+            }
         } else if node.is_file() {
             let hash = node.hash().as_ref().expect("File must have hash");
 
@@ -529,20 +532,32 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
     }
 
     fn restore(&mut self, key: &str, target: &str) -> StdResult<(), Box<StdError>> {
-        info!("Restoring {} to {}", key, target);
 
-        let node = match self.index.latest(key)? {
-            Some(n) => n,
-            None => {
-                return Err(box DefaultEngineError::Other(format!("Not Found: {:?}", key)));
+        if key.is_empty() {
+            info!("Performing full restore to {}", target);
+
+            create_dir_all(target)?;
+            for node in self.index.list("")? {
+                self.restore_node(node, "", target)?;
             }
-        };
+            Ok(())
 
-        let mut tmp = PathBuf::new();
-        tmp.push(key);
-        let parent = tmp.parent().expect("restore.parent").to_str().expect("UTF-8 validity");
-        debug!("Parent of key is {:?}", parent);
+        } else {
 
-        self.restore_node(node, parent, target)
+            info!("Restoring {} to {}", key, target);
+            let node = match self.index.latest(key)? {
+                Some(n) => n,
+                None => {
+                    return Err(box DefaultEngineError::Other(format!("Not Found: {:?}", key)));
+                }
+            };
+
+            let mut tmp = PathBuf::new();
+            tmp.push(key);
+            let parent = tmp.parent().expect("restore.parent").to_str().expect("UTF-8 validity");
+            debug!("Parent of key is {:?}", parent);
+
+            self.restore_node(node, parent, target)
+        }
     }
 }
