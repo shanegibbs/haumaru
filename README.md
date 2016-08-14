@@ -7,13 +7,13 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 ### Primary
 * Restore
 * List
-* S3 upload (hashes and backup_set records)
-* Handle sym/hard links
-* Use transactions for updates
 * Config file
+* S3 upload (hashes and backup_set records)
 * Refactor `Storage.send` to `Storage.send(Read, &[u8])`
+* Use transactions for updates
 
 ### Secondary
+* Handle sym/hard links
 * Colapse backup sets
 * Look into refactoring `Node` such that `validate()` is redundant
 * Overhaul errors
