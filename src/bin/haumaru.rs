@@ -76,7 +76,34 @@ fn app<'a, 'b>() -> App<'a, 'b> {
                 .help("Working path for haumaru")
                 .default_value(".haumaru/working")
                 .takes_value(true)
+                .required(true)))
+        .subcommand(SubCommand::with_name("restore")
+            .about("Restore file(s) to target")
+            .arg(Arg::with_name("key")
+                .long("key")
+                .short("k")
+                .value_name("KEY")
+                .help("Restore file(s) on key")
+                .default_value("")
+                .takes_value(true)
+                .required(true))
+            .arg(Arg::with_name("target")
+                .long("target")
+                .short("t")
+                .value_name("PATH")
+                .help("Destination to restore file(s) to.")
+                .default_value(".")
+                .takes_value(true)
+                .required(true))
+            .arg(Arg::with_name("working")
+                .long("working")
+                .short("w")
+                .value_name("PATH")
+                .help("Working path for haumaru")
+                .default_value(".haumaru/working")
+                .takes_value(true)
                 .required(true)));
+
 }
 
 fn run() -> Result<i64, Box<Error>> {
@@ -91,10 +118,20 @@ fn run() -> Result<i64, Box<Error>> {
         let interval = cmd.value_of("interval").ok_or(CliError::Missing("interval".to_string()))?;
         let config = haumaru_api::EngineConfig::new(path, working, interval)?;
         haumaru_api::run(config)?;
+
     } else if let Some(cmd) = matches.subcommand_matches("verify") {
         let working = cmd.value_of("working").ok_or(CliError::Missing("working".to_string()))?;
         let config = haumaru_api::EngineConfig::new_detached(working);
         haumaru_api::verify(config)?;
+
+    } else if let Some(cmd) = matches.subcommand_matches("restore") {
+        let working = cmd.value_of("working").ok_or(CliError::Missing("working".to_string()))?;
+        let key = cmd.value_of("key").ok_or(CliError::Missing("key".to_string()))?;
+        let target = cmd.value_of("target").ok_or(CliError::Missing("target".to_string()))?;
+
+        let config = haumaru_api::EngineConfig::new_detached(working);
+        haumaru_api::restore(config, key, target)?;
+
     } else {
         app().print_help().unwrap();
         println!("");
@@ -108,8 +145,8 @@ fn main() {
 
     match run() {
         Err(e) => {
-            println!("ERROR: {}", e);
-            println!("{:?}", e);
+            error!("{}", e);
+            debug!("{:?}", e);
             return;
         }
         Ok(_) => (),

@@ -118,6 +118,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "haumaru_api"
 version = "0.1.0"
 dependencies = [
+ "env_logger 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "fsevent 0.2.14 (git+https://github.com/shanegibbs/fsevent-rust.git)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "notify 2.6.3 (registry+https://github.com/rust-lang/crates.io-index)",

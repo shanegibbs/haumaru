@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
 use std::fs::{create_dir_all, rename};
+use rustc_serialize::hex::ToHex;
 
 use {EngineConfig, Node, Storage};
 
@@ -152,6 +153,16 @@ impl Storage for LocalStorage {
         }
 
         Ok(n)
+    }
+
+    fn retrieve(&self, hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>> {
+        let hex = hash.to_hex();
+
+        let mut hash_filename = PathBuf::new();
+        hash_filename.push(&self.target);
+        hash_filename.push(hash_path(&hex));
+
+        Ok(Some(box File::open(hash_filename)?))
     }
 
     fn verify(&self, node: Node) -> Result<Option<Node>, Box<Error>> {

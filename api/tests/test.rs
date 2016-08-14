@@ -8,7 +8,7 @@ use std::fs::{File, remove_file, create_dir_all, remove_dir, remove_dir_all};
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::collections::HashSet;
-use std::io::{Write, Cursor};
+use std::io::{Read, Write, Cursor};
 use log::{LogRecord, LogLevelFilter, LogLevel};
 use env_logger::LogBuilder;
 use std::env;
@@ -385,3 +385,73 @@ fn scan_deleted_file() {
                               Record::new(NodeKind::File, "b".into(), 0, 0).deleted()];
     assert_eq!(v, dump);
 }
+
+#[test]
+fn restore_file_from_root() {
+    let name = "restore_file_from_root";
+    test_change(name, |engine, path| {
+        let filename = write_file(path.clone(), "a", "abc");
+        debug!("Created {:?}", filename);
+
+        engine.scan(5).unwrap();
+
+        let mut restore_path = path.clone();
+        restore_path.push("restore");
+        create_dir_all(&restore_path).expect("mkdir restore");
+        let restore_path_str = &restore_path.to_str().expect("Path to_str");
+
+        engine.restore("a", restore_path_str).expect("engine restore");
+
+        let mut restored_file = restore_path.clone();
+        restored_file.push("a");
+
+        let mut f = File::open(restored_file).expect("open a");
+        let mut content = String::new();
+        f.read_to_string(&mut content).expect("read_to_string");
+        assert_eq!(content, "abc");
+    });
+}
+
+#[test]
+fn restore_file_from_dir() {
+    let name = "restore_file";
+    test_change(name, |engine, path| {
+
+        let mut dir = path.clone();
+        dir.push("dir");
+        create_dir_all(dir.clone()).unwrap();
+        debug!("Created {:?}", dir);
+
+        let filename = write_file(dir.clone(), "a", "abc");
+        debug!("Created {:?}", filename);
+
+        engine.scan(5).unwrap();
+
+        let mut restore_path = path.clone();
+        restore_path.push("restore");
+        create_dir_all(&restore_path).expect("mkdir restore");
+        let restore_path_str = &restore_path.to_str().expect("Path to_str");
+
+        engine.restore("dir/a", restore_path_str).expect("engine restore");
+
+        let mut restored_file = restore_path.clone();
+        restored_file.push("a");
+
+        let mut f = File::open(restored_file).expect("open a");
+        let mut content = String::new();
+        f.read_to_string(&mut content).expect("read_to_string");
+        assert_eq!(content, "abc");
+    });
+}
+
+#[ignore]
+#[test]
+fn restore_dir_from_root() {}
+
+#[ignore]
+#[test]
+fn restore_dir_from_dir() {}
+
+#[ignore]
+#[test]
+fn full_restore() {}

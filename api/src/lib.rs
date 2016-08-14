@@ -25,6 +25,7 @@ use rusqlite::Error as SqliteError;
 use rusqlite::Connection;
 use std::fmt;
 use std::borrow::Borrow;
+use std::io::Read;
 
 use engine::DefaultEngine;
 use filesystem::Change;
@@ -35,6 +36,7 @@ pub trait Engine {
     fn run(&mut self) -> Result<u64, Box<Error>>;
     fn process_change(&mut self, backup_set: u64, change: Change) -> Result<(), Box<Error>>;
     fn verify_store(&mut self) -> Result<(), Box<Error>>;
+    fn restore(&mut self, key: &str, target: &str) -> Result<(), Box<Error>>;
 }
 
 pub trait Index {
@@ -50,6 +52,7 @@ pub trait Index {
 
 pub trait Storage {
     fn send(&self, String, Node) -> Result<Node, Box<Error>>;
+    fn retrieve(&self, hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>>;
     fn verify(&self, Node) -> Result<Option<Node>, Box<Error>>;
 }
 
@@ -164,6 +167,25 @@ pub fn run(config: EngineConfig) -> Result<(), HaumaruError> {
     Ok(())
 }
 
+fn setup_and_run<F>(config: EngineConfig, mut f: F) -> Result<(), HaumaruError>
+    where F: FnMut(&mut Engine) -> Result<(), HaumaruError>
+{
+    let conn = SqlLightIndex::open_database(&config).map_err(|e| HaumaruError::Index(box e))?;
+    let mut index = SqlLightIndex::new(&conn)
+        .map_err(|e| HaumaruError::Index(box e))?;
+
+    let store = LocalStorage::new(&config)
+        .map_err(|e| HaumaruError::Storage(box e))?;
+
+    let mut excludes = HashSet::new();
+    excludes.insert(config.abs_working().to_str().unwrap().to_string());
+
+    let mut engine = DefaultEngine::new(config, excludes, &mut index, store)
+        .map_err(|e| HaumaruError::Engine(e))?;
+
+    f(&mut engine)
+}
+
 pub fn verify(config: EngineConfig) -> Result<(), HaumaruError> {
 
     let conn = SqlLightIndex::open_database(&config).map_err(|e| HaumaruError::Index(box e))?;
@@ -181,6 +203,11 @@ pub fn verify(config: EngineConfig) -> Result<(), HaumaruError> {
     engine.verify_store().map_err(|e| HaumaruError::Engine(e))?;
 
     Ok(())
+}
+
+pub fn restore(config: EngineConfig, key: &str, target: &str) -> Result<(), HaumaruError> {
+    setup_and_run(config,
+                  |eng| eng.restore(key, target).map_err(|e| HaumaruError::Engine(e)))
 }
 
 pub fn dump() -> Result<(), HaumaruError> {

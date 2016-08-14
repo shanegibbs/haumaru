@@ -13,9 +13,12 @@ use std::num::ParseIntError;
 use time;
 use time::Timespec;
 use std::fs::create_dir_all;
+use std::io::copy;
+use std::fs::File;
+use rustc_serialize::hex::ToHex;
 
 use filesystem::Change;
-use {Engine, Index, Storage, get_key};
+use {Node, Engine, Index, Storage, get_key};
 
 #[derive(Debug)]
 pub struct EngineConfig {
@@ -76,6 +79,7 @@ pub enum DefaultEngineError {
     Index(Box<StdError>),
     Storage(String, Box<StdError>),
     Other(String),
+    GeneralWithNode(String, Node),
 }
 
 impl StdError for DefaultEngineError {
@@ -103,6 +107,7 @@ impl Display for DefaultEngineError {
                 write!(f, "Storage error: {}: {}", s, e).unwrap()
             }
             DefaultEngineError::Other(ref s) => write!(f, "Engine error: {}", s).unwrap(),
+            DefaultEngineError::GeneralWithNode(ref s, ref _n) => write!(f, "{}", s).unwrap(),
         }
         Ok(())
     }
@@ -246,6 +251,62 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
         }
 
         info!("Full scan complete");
+        Ok(())
+    }
+
+    fn restore_node(&self,
+                    node: Node,
+                    node_base: &str,
+                    target: &str)
+                    -> StdResult<(), Box<StdError>> {
+
+        debug!("node_base={}", node_base);
+
+        let n = match node_base.is_empty() {
+            true => 0,
+            false => node_base.len() + 1,
+        };
+        let node_restore_path = &node.path()[n..];
+        debug!("node_restore_path={}", node_restore_path);
+
+        let mut restore_path = PathBuf::new();
+        restore_path.push(target);
+        restore_path.push(node_restore_path);
+
+        if node.is_dir() {
+            debug!("Creating dir {:?}", restore_path);
+            create_dir_all(restore_path)?;
+        } else if node.is_file() {
+            let hash = node.hash().as_ref().expect("File must have hash");
+
+            debug!("Retrieving hash {}", hash.as_slice().to_hex());
+            let mut ingest = match self.storage.retrieve(hash.as_slice())? {
+                None => {
+                    let msg = format!("Unable to restore {}, hash is missing from storage",
+                                      node.path());
+                    return Err(box DefaultEngineError::GeneralWithNode(msg, node.clone()));
+                }
+                Some(i) => i,
+            };
+
+            let restore_path_str = restore_path.to_str()
+                .expect("restore_path_str string");
+
+            debug!("Restoring {}", restore_path_str);
+            let mut outgest = File::create(&restore_path)
+                .map_err(|e| {
+                    let msg = format!("Unable to create file  {}: {}", node.path(), e);
+                    box DefaultEngineError::GeneralWithNode(msg, node.clone())
+                })?;
+            copy(&mut ingest, &mut outgest)
+                .map_err(|e| {
+                    DefaultEngineError::GeneralWithNode(format!("Failed writing {}: {}",
+                                                                restore_path_str,
+                                                                e),
+                                                        node.clone())
+                })?;
+        }
+
         Ok(())
     }
 }
@@ -465,5 +526,23 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
         }
 
         Ok(())
+    }
+
+    fn restore(&mut self, key: &str, target: &str) -> StdResult<(), Box<StdError>> {
+        info!("Restoring {} to {}", key, target);
+
+        let node = match self.index.latest(key)? {
+            Some(n) => n,
+            None => {
+                return Err(box DefaultEngineError::Other(format!("Not Found: {:?}", key)));
+            }
+        };
+
+        let mut tmp = PathBuf::new();
+        tmp.push(key);
+        let parent = tmp.parent().expect("restore.parent").to_str().expect("UTF-8 validity");
+        debug!("Parent of key is {:?}", parent);
+
+        self.restore_node(node, parent, target)
     }
 }
