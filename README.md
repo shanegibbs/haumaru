@@ -15,3 +15,11 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 
 ### Secondary
 * Colapse backup sets
+
+## Done
+
+* ~~Storage verification~~
+* ~~Backup Sets~~
+* ~~Backup to local directory~~
+* ~~Scan and monitor all basic file and dir changes~~
+* ~~Use SQLite for index~~
