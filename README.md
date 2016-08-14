@@ -1,3 +1,5 @@
+The next sucessor to https://github.com/shanegibbs/backitup and https://github.com/shanegibbs/babirusa
+
 ## TODO
 
 ### Primary
