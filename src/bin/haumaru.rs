@@ -77,6 +77,24 @@ fn app<'a, 'b>() -> App<'a, 'b> {
                 .default_value(".haumaru/working")
                 .takes_value(true)
                 .required(true)))
+        .subcommand(SubCommand::with_name("ls")
+            .about("List file(s)")
+            .arg(Arg::with_name("key")
+                .long("key")
+                .short("k")
+                .value_name("KEY")
+                .help("Restore file(s) on key")
+                .default_value("")
+                .takes_value(true)
+                .required(true))
+            .arg(Arg::with_name("working")
+                .long("working")
+                .short("w")
+                .value_name("PATH")
+                .help("Working path for haumaru")
+                .default_value(".haumaru/working")
+                .takes_value(true)
+                .required(true)))
         .subcommand(SubCommand::with_name("restore")
             .about("Restore file(s)")
             .arg(Arg::with_name("key")
@@ -123,6 +141,13 @@ fn run() -> Result<i64, Box<Error>> {
         let working = cmd.value_of("working").ok_or(CliError::Missing("working".to_string()))?;
         let config = haumaru_api::EngineConfig::new_detached(working);
         haumaru_api::verify(config)?;
+
+    } else if let Some(cmd) = matches.subcommand_matches("ls") {
+        let working = cmd.value_of("working").ok_or(CliError::Missing("working".to_string()))?;
+        let key = cmd.value_of("key").ok_or(CliError::Missing("key".to_string()))?;
+
+        let config = haumaru_api::EngineConfig::new_detached(working);
+        haumaru_api::list(config, key)?;
 
     } else if let Some(cmd) = matches.subcommand_matches("restore") {
         let working = cmd.value_of("working").ok_or(CliError::Missing("working".to_string()))?;

@@ -6,6 +6,7 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 
 ### Primary
 * List
+* Restore and list to a specific timestamp
 * Config file
 * S3 upload (hashes and backup_set records)
 * Refactor `Storage.send` to `Storage.send(Read, &[u8])`

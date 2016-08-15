@@ -13,7 +13,7 @@ use std::num::ParseIntError;
 use time;
 use time::Timespec;
 use std::fs::create_dir_all;
-use std::io::copy;
+use std::io::{Write, copy};
 use std::fs::File;
 use rustc_serialize::hex::ToHex;
 
@@ -559,5 +559,111 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
 
             self.restore_node(node, parent, target)
         }
+    }
+
+    fn list(&mut self, key: &str, out: &mut Write) -> StdResult<(), Box<StdError>> {
+        use time::{at, strftime};
+
+        let node = match self.index.latest(key)? {
+            Some(n) => n,
+            None => {
+                return Err(box DefaultEngineError::Other(format!("Not Found: {}", key)));
+            }
+        };
+
+        if node.is_file() {
+            let t = at(node.mtime().clone());
+            let tm = strftime("%b %e %H:%M %z", &t).expect("mtime format");
+            write!(out, "Name:   {}\n", node.path()).expect("write");
+            write!(out, "Size:   {} bytes\n", node.size()).expect("write");
+            write!(out, "Time:   {}\n", tm).expect("write");
+            write!(out, "SHA256: {}\n", node.hash_string()).expect("write");
+
+        } else if node.is_dir() {
+            for node in self.index.list(node.path())? {
+                let mode = node.mode();
+                if mode & 2u32.pow(9) == 2u32.pow(9) {
+                    write!(out, "d").expect("write");
+                } else {
+                    write!(out, "-").expect("write");
+                }
+                if mode & 2u32.pow(8) == 2u32.pow(8) {
+                    write!(out, "r").expect("write");
+                } else {
+                    write!(out, "-").expect("write");
+                }
+                if mode & 2u32.pow(7) == 2u32.pow(7) {
+                    write!(out, "w").expect("write");
+                } else {
+                    write!(out, "-").expect("write");
+                }
+                if mode & 2u32.pow(6) == 2u32.pow(6) {
+                    write!(out, "x").expect("write");
+                } else {
+                    write!(out, "-").expect("write");
+                }
+                if mode & 2u32.pow(5) == 2u32.pow(5) {
+                    write!(out, "r").expect("write");
+                } else {
+                    write!(out, "-").expect("write");
+                }
+                if mode & 2u32.pow(4) == 2u32.pow(4) {
+                    write!(out, "w").expect("write");
+                } else {
+                    write!(out, "-").expect("write");
+                }
+                if mode & 2u32.pow(3) == 2u32.pow(3) {
+                    write!(out, "x").expect("write");
+                } else {
+                    write!(out, "-").expect("write");
+                }
+                if mode & 2u32.pow(2) == 2u32.pow(2) {
+                    write!(out, "r").expect("write");
+                } else {
+                    write!(out, "-").expect("write");
+                }
+                if mode & 2u32.pow(1) == 2u32.pow(1) {
+                    write!(out, "w").expect("write");
+                } else {
+                    write!(out, "-").expect("write");
+                }
+                if mode & 2u32.pow(0) == 2u32.pow(0) {
+                    write!(out, "x").expect("write");
+                } else {
+                    write!(out, "-").expect("write");
+                }
+
+                let t = at(node.mtime().clone());
+                let tm = strftime("%b %e %H:%M", &t).expect("mtime format");
+                write!(out, " {}B {} {}\n", node.size(), tm, node.path()).expect("write");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    extern crate env_logger;
+
+    // use super::*;
+
+    #[ignore]
+    #[test]
+    fn list_file() {
+        let _ = env_logger::init();
+    }
+
+    #[ignore]
+    #[test]
+    fn list_dir() {
+        let _ = env_logger::init();
+    }
+
+    #[ignore]
+    #[test]
+    fn list_root() {
+        let _ = env_logger::init();
     }
 }

@@ -25,7 +25,7 @@ use rusqlite::Error as SqliteError;
 use rusqlite::Connection;
 use std::fmt;
 use std::borrow::Borrow;
-use std::io::Read;
+use std::io::{Read, Write};
 
 use engine::DefaultEngine;
 use filesystem::Change;
@@ -37,6 +37,7 @@ pub trait Engine {
     fn process_change(&mut self, backup_set: u64, change: Change) -> Result<(), Box<Error>>;
     fn verify_store(&mut self) -> Result<(), Box<Error>>;
     fn restore(&mut self, key: &str, target: &str) -> Result<(), Box<Error>>;
+    fn list(&mut self, key: &str, out: &mut Write) -> Result<(), Box<Error>>;
 }
 
 pub trait Index {
@@ -208,6 +209,18 @@ pub fn verify(config: EngineConfig) -> Result<(), HaumaruError> {
 pub fn restore(config: EngineConfig, key: &str, target: &str) -> Result<(), HaumaruError> {
     setup_and_run(config,
                   |eng| eng.restore(key, target).map_err(|e| HaumaruError::Engine(e)))
+}
+
+pub fn list(config: EngineConfig, key: &str) -> Result<(), HaumaruError> {
+    use std::io::Cursor;
+
+    let mut cur = Cursor::new(Vec::new());
+    setup_and_run(config,
+                  |eng| eng.list(key, &mut cur).map_err(|e| HaumaruError::Engine(e)))
+        ?;
+    let content = String::from_utf8(cur.into_inner()).expect("from_utf8");
+    println!("{}", content);
+    Ok(())
 }
 
 pub fn dump() -> Result<(), HaumaruError> {
