@@ -83,7 +83,7 @@ fn app<'a, 'b>() -> App<'a, 'b> {
                 .long("key")
                 .short("k")
                 .value_name("KEY")
-                .help("Restore file(s) on key")
+                .help("List file(s) on key")
                 .default_value("")
                 .takes_value(true)
                 .required(true))
