@@ -41,10 +41,11 @@ pub trait Engine {
 }
 
 pub trait Index {
-    fn latest<S: Into<String>>(&mut self, path: S) -> Result<Option<Node>, Box<Error>>;
-    fn list<S: Into<String>>(&mut self, path: S) -> Result<Vec<Node>, Box<Error>>;
-    fn visit_all_hashable<F>(&mut self, mut f: F) -> Result<(), Box<Error>>
-        where F: FnMut(Node) -> Result<(), Box<Error>>;
+    fn latest(&mut self, path: String) -> Result<Option<Node>, Box<Error>>;
+    fn list(&mut self, path: String) -> Result<Vec<Node>, Box<Error>>;
+    fn visit_all_hashable(&mut self,
+                          f: &mut FnMut(Node) -> Result<(), Box<Error>>)
+                          -> Result<(), Box<Error>>;
     fn insert(&mut self, Node) -> Result<Node, Box<Error>>;
     fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, Box<Error>>;
 

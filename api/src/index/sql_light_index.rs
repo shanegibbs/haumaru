@@ -276,9 +276,9 @@ impl<'a> SqlLightIndex<'a> {
 }
 
 impl<'a> Index for SqlLightIndex<'a> {
-    fn visit_all_hashable<F>(&mut self, mut f: F) -> Result<(), Box<Error>>
-        where F: FnMut(Node) -> Result<(), Box<Error>>
-    {
+    fn visit_all_hashable(&mut self,
+                          f: &mut FnMut(Node) -> Result<(), Box<Error>>)
+                          -> Result<(), Box<Error>> {
         trace!("Listing all hashable");
 
         let mut rows = self.get_all_hashable
@@ -295,9 +295,7 @@ impl<'a> Index for SqlLightIndex<'a> {
         Ok(())
     }
 
-    fn latest<S: Into<String>>(&mut self, path: S) -> Result<Option<Node>, Box<Error>> {
-        let path = path.into();
-
+    fn latest(&mut self, path: String) -> Result<Option<Node>, Box<Error>> {
         let mut rows = self.get_latest.query(&[&path]).unwrap();
         let row = rows.next();
         if row.is_none() {
@@ -425,8 +423,7 @@ impl<'a> Index for SqlLightIndex<'a> {
         vec
     }
 
-    fn list<S: Into<String>>(&mut self, path: S) -> Result<Vec<Node>, Box<Error>> {
-        let path = path.into();
+    fn list(&mut self, path: String) -> Result<Vec<Node>, Box<Error>> {
         trace!("Listing path {}", path);
 
         let mut rows = self.list_path
@@ -572,7 +569,7 @@ mod test {
         let mtime = n.mtime();
 
         index.insert(n.clone()).unwrap();
-        let mut latest = index.latest("a").expect("ok").expect("some");
+        let mut latest = index.latest("a".to_string()).expect("ok").expect("some");
         latest.set_mtime(mtime.clone());
         assert_eq!(n, latest);
     }
@@ -610,7 +607,7 @@ mod test {
 
         index.insert(n).unwrap();
 
-        let n = index.latest("a").unwrap();
+        let n = index.latest("a".to_string()).unwrap();
         assert!(n.is_some());
         let n = n.unwrap();
 
@@ -631,7 +628,7 @@ mod test {
 
         index.insert(n).unwrap();
 
-        let n = index.latest("a").unwrap();
+        let n = index.latest("a".to_string()).unwrap();
         assert!(n.is_some());
         let n = n.unwrap();
 
@@ -658,7 +655,7 @@ mod test {
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
         index.insert(file_a.clone()).unwrap();
 
-        let list = index.list("dir").unwrap();
+        let list = index.list("dir".to_string()).unwrap();
         let expected: Vec<Node> = vec![file_a];
 
         assert_eq!(expected, list);
@@ -675,7 +672,7 @@ mod test {
 
         index.insert(n.clone()).unwrap();
 
-        let list = index.list("").unwrap();
+        let list = index.list("".to_string()).unwrap();
 
         let expected: Vec<Node> = vec![n];
         assert_eq!(expected, list);

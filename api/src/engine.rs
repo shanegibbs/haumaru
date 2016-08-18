@@ -13,7 +13,7 @@ use std::num::ParseIntError;
 use time;
 use time::Timespec;
 use std::fs::create_dir_all;
-use std::io::{Write, copy};
+use std::io::{Write, Cursor, copy};
 use std::fs::File;
 use rustc_serialize::hex::ToHex;
 
@@ -276,7 +276,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
         if node.is_dir() {
             debug!("Creating dir {:?}", restore_path);
             create_dir_all(restore_path)?;
-            for node in self.index.list(node.path())? {
+            for node in self.index.list(node.path().to_string())? {
                 self.restore_node(node, node_base, target)?;
             }
         } else if node.is_file() {
@@ -312,6 +312,65 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
 
         Ok(())
     }
+}
+
+fn perms_string(mode: u32) -> String {
+    let mut out = Cursor::new(Vec::new());
+    if mode & 2u32.pow(8) == 2u32.pow(8) {
+        write!(out, "r").expect("write");
+    } else {
+        write!(out, "-").expect("write");
+    }
+    if mode & 2u32.pow(7) == 2u32.pow(7) {
+        write!(out, "w").expect("write");
+    } else {
+        write!(out, "-").expect("write");
+    }
+    if mode & 2u32.pow(6) == 2u32.pow(6) {
+        write!(out, "x").expect("write");
+    } else {
+        write!(out, "-").expect("write");
+    }
+    if mode & 2u32.pow(5) == 2u32.pow(5) {
+        write!(out, "r").expect("write");
+    } else {
+        write!(out, "-").expect("write");
+    }
+    if mode & 2u32.pow(4) == 2u32.pow(4) {
+        write!(out, "w").expect("write");
+    } else {
+        write!(out, "-").expect("write");
+    }
+    if mode & 2u32.pow(3) == 2u32.pow(3) {
+        write!(out, "x").expect("write");
+    } else {
+        write!(out, "-").expect("write");
+    }
+    if mode & 2u32.pow(2) == 2u32.pow(2) {
+        write!(out, "r").expect("write");
+    } else {
+        write!(out, "-").expect("write");
+    }
+    if mode & 2u32.pow(1) == 2u32.pow(1) {
+        write!(out, "w").expect("write");
+    } else {
+        write!(out, "-").expect("write");
+    }
+    if mode & 2u32.pow(0) == 2u32.pow(0) {
+        write!(out, "x").expect("write");
+    } else {
+        write!(out, "-").expect("write");
+    }
+    String::from_utf8(out.into_inner()).expect("from_utf8")
+}
+
+#[test]
+fn test_perms_string() {
+    assert_eq!("---------", &perms_string(0));
+    assert_eq!("rwxrwxrwx", &perms_string(511));
+    assert_eq!("rw-r--r--", &perms_string(420));
+    assert_eq!("rw-------", &perms_string(384));
+    assert_eq!("------rwx", &perms_string(7));
 }
 
 fn is_excluded(excludes: &HashSet<String>, change: &Change, base_path: &str) -> bool {
@@ -516,7 +575,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
         let storage = &self.storage;
 
         self.index
-            .visit_all_hashable(|node| {
+            .visit_all_hashable(&mut |node| {
                 if let Some(node) = storage.verify(node)? {
                     debug!("Verification failed for {:?}", node);
                     failed.push(node);
@@ -537,7 +596,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
             info!("Performing full restore to {}", target);
 
             create_dir_all(target)?;
-            for node in self.index.list("")? {
+            for node in self.index.list("".to_string())? {
                 self.restore_node(node, "", target)?;
             }
             Ok(())
@@ -545,7 +604,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
         } else {
 
             info!("Restoring {} to {}", key, target);
-            let node = match self.index.latest(key)? {
+            let node = match self.index.latest(key.to_string())? {
                 Some(n) => n,
                 None => {
                     return Err(box DefaultEngineError::Other(format!("Not Found: {:?}", key)));
@@ -564,7 +623,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
     fn list(&mut self, key: &str, out: &mut Write) -> StdResult<(), Box<StdError>> {
         use time::{at, strftime};
 
-        let node = match self.index.latest(key)? {
+        let node = match self.index.latest(key.to_string())? {
             Some(n) => n,
             None => {
                 return Err(box DefaultEngineError::Other(format!("Not Found: {}", key)));
@@ -580,62 +639,22 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
             write!(out, "SHA256: {}\n", node.hash_string()).expect("write");
 
         } else if node.is_dir() {
-            for node in self.index.list(node.path())? {
-                let mode = node.mode();
-                if mode & 2u32.pow(9) == 2u32.pow(9) {
-                    write!(out, "d").expect("write");
-                } else {
-                    write!(out, "-").expect("write");
-                }
-                if mode & 2u32.pow(8) == 2u32.pow(8) {
-                    write!(out, "r").expect("write");
-                } else {
-                    write!(out, "-").expect("write");
-                }
-                if mode & 2u32.pow(7) == 2u32.pow(7) {
-                    write!(out, "w").expect("write");
-                } else {
-                    write!(out, "-").expect("write");
-                }
-                if mode & 2u32.pow(6) == 2u32.pow(6) {
-                    write!(out, "x").expect("write");
-                } else {
-                    write!(out, "-").expect("write");
-                }
-                if mode & 2u32.pow(5) == 2u32.pow(5) {
-                    write!(out, "r").expect("write");
-                } else {
-                    write!(out, "-").expect("write");
-                }
-                if mode & 2u32.pow(4) == 2u32.pow(4) {
-                    write!(out, "w").expect("write");
-                } else {
-                    write!(out, "-").expect("write");
-                }
-                if mode & 2u32.pow(3) == 2u32.pow(3) {
-                    write!(out, "x").expect("write");
-                } else {
-                    write!(out, "-").expect("write");
-                }
-                if mode & 2u32.pow(2) == 2u32.pow(2) {
-                    write!(out, "r").expect("write");
-                } else {
-                    write!(out, "-").expect("write");
-                }
-                if mode & 2u32.pow(1) == 2u32.pow(1) {
-                    write!(out, "w").expect("write");
-                } else {
-                    write!(out, "-").expect("write");
-                }
-                if mode & 2u32.pow(0) == 2u32.pow(0) {
-                    write!(out, "x").expect("write");
-                } else {
-                    write!(out, "-").expect("write");
-                }
-
+            for node in self.index.list(node.path().to_string())? {
+                let d = match node.is_dir() {
+                    true => "d",
+                    false => "-",
+                };
+                let mode = perms_string(node.mode());
                 let t = at(node.mtime().clone());
                 let tm = strftime("%b %e %H:%M", &t).expect("mtime format");
-                write!(out, " {}B {} {}\n", node.size(), tm, node.path()).expect("write");
+                write!(out,
+                       "{}{} {}B {} {}\n",
+                       d,
+                       mode,
+                       node.size(),
+                       tm,
+                       node.path())
+                    .expect("write");
             }
         }
 
@@ -647,23 +666,102 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
 mod test {
     extern crate env_logger;
 
+    use std::io::Cursor;
+    use std::collections::HashSet;
+    use rusqlite::Connection;
+    use time::Timespec;
+
+    use index::SqlLightIndex;
+    use storage::LocalStorage;
+    use engine::DefaultEngine;
+    use {Node, Index, Engine, EngineConfig};
+
     // use super::*;
 
-    #[ignore]
-    #[test]
-    fn list_file() {
+    fn test_list(key: &str, f: &Fn(&mut Index)) -> String {
         let _ = env_logger::init();
+
+        let conn = Connection::open_in_memory().expect("conn");
+        let mut index = SqlLightIndex::new(&conn).expect("index");
+        let config = EngineConfig::new_detached("target/test/list_file");
+        let store = LocalStorage::new(&config).expect("store");
+
+        f(&mut index);
+
+        let mut engine = DefaultEngine::new(config, HashSet::new(), &mut index, store)
+            .expect("new engine");
+        let mut cur = Cursor::new(Vec::new());
+        engine.list(key, &mut cur).expect("list");
+        String::from_utf8(cur.into_inner()).expect("from_utf8")
     }
 
     #[ignore]
     #[test]
-    fn list_dir() {
-        let _ = env_logger::init();
+    fn list_root_empty() {
+        let output = test_list("", &|_index| {});
+        assert_eq!("", output.as_str());
     }
 
     #[ignore]
     #[test]
     fn list_root() {
-        let _ = env_logger::init();
+        let output = test_list("",
+                               &|index| {
+            index.insert(Node::new_file("a", Timespec::new(10, 0), 1024, 500)
+                    .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                                    17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31])
+                    .with_backup_set(5))
+                .expect("insert");
+        });
+        assert_eq!("", output.as_str());
     }
+
+    #[test]
+    fn list_file() {
+        let output = test_list("a",
+                               &|index| {
+            index.insert(Node::new_file("a", Timespec::new(10, 0), 1024, 500)
+                    .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                                    17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31])
+                    .with_backup_set(5))
+                .expect("insert");
+        });
+        assert_eq!("Name:   a\n\
+                    Size:   1024 bytes\n\
+                    Time:   Dec 31 18:00 -0600\n\
+                    SHA256: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n",
+                   output.as_str());
+    }
+
+    #[test]
+    fn list_dir() {
+        let output = test_list("a",
+                               &|index| {
+            index.insert(Node::new_dir("a", Timespec::new(10, 0), 500).with_backup_set(5))
+                .expect("insert dir");
+            index.insert(Node::new_dir("a/dir", Timespec::new(10, 0), 488).with_backup_set(5))
+                .expect("insert dir");
+            index.insert(Node::new_file("a/file", Timespec::new(10, 0), 1024, 420)
+                    .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                                    17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31])
+                    .with_backup_set(5))
+                .expect("insert_file");
+        });
+        assert_eq!("-rw-r--r-- 1024B Dec 31 18:00 a/file\n\
+                    drwxr-x--- 0B Dec 31 18:00 a/dir\n",
+                   output.as_str());
+    }
+
+    #[test]
+    fn list_empty_dir() {
+        let output = test_list("a",
+                               &|index| {
+                                   index.insert(Node::new_dir("a", Timespec::new(10, 0), 500)
+                                           .with_backup_set(5))
+                                       .expect("insert dir");
+
+                               });
+        assert_eq!("", output.as_str());
+    }
+
 }
