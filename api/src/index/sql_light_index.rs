@@ -139,7 +139,7 @@ static LIST_PATH_QUERY_SQL: &'static str = "
         WHERE parent_path.path = ?
         GROUP BY path_id
     )
-    ORDER BY path.path DESC";
+    ORDER BY path.path ASC";
 
 static DUMP_NODES_QUERY_SQL: &'static str = "
     SELECT node.id as node_id, path.id as path_id,

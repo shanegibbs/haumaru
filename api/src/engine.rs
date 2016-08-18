@@ -11,7 +11,7 @@ use std::fmt::Error as FmtError;
 use std::time::Duration;
 use std::num::ParseIntError;
 use time;
-use time::Timespec;
+use time::{Timespec, at, strftime};
 use std::fs::create_dir_all;
 use std::io::{Write, Cursor, copy};
 use std::fs::File;
@@ -621,7 +621,13 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
     }
 
     fn list(&mut self, key: &str, out: &mut Write) -> StdResult<(), Box<StdError>> {
-        use time::{at, strftime};
+
+        if key == "" {
+            for node in self.index.list("".to_string())? {
+                write_ls_node(out, &node);
+            }
+            return Ok(());
+        }
 
         let node = match self.index.latest(key.to_string())? {
             Some(n) => n,
@@ -640,26 +646,30 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
 
         } else if node.is_dir() {
             for node in self.index.list(node.path().to_string())? {
-                let d = match node.is_dir() {
-                    true => "d",
-                    false => "-",
-                };
-                let mode = perms_string(node.mode());
-                let t = at(node.mtime().clone());
-                let tm = strftime("%b %e %H:%M", &t).expect("mtime format");
-                write!(out,
-                       "{}{} {}B {} {}\n",
-                       d,
-                       mode,
-                       node.size(),
-                       tm,
-                       node.path())
-                    .expect("write");
+                write_ls_node(out, &node);
             }
         }
 
         Ok(())
     }
+}
+
+fn write_ls_node(out: &mut Write, node: &Node) {
+    let d = match node.is_dir() {
+        true => "d",
+        false => "-",
+    };
+    let mode = perms_string(node.mode());
+    let t = at(node.mtime().clone());
+    let tm = strftime("%b %e %H:%M", &t).expect("mtime format");
+    write!(out,
+           "{}{} {}B {} {}\n",
+           d,
+           mode,
+           node.size(),
+           tm,
+           node.path())
+        .expect("write");
 }
 
 #[cfg(test)]
@@ -695,14 +705,12 @@ mod test {
         String::from_utf8(cur.into_inner()).expect("from_utf8")
     }
 
-    #[ignore]
     #[test]
     fn list_root_empty() {
         let output = test_list("", &|_index| {});
         assert_eq!("", output.as_str());
     }
 
-    #[ignore]
     #[test]
     fn list_root() {
         let output = test_list("",
@@ -713,7 +721,7 @@ mod test {
                     .with_backup_set(5))
                 .expect("insert");
         });
-        assert_eq!("", output.as_str());
+        assert_eq!("-rwxrw-r-- 1024B Dec 31 18:00 a\n", output.as_str());
     }
 
     #[test]
@@ -747,8 +755,8 @@ mod test {
                     .with_backup_set(5))
                 .expect("insert_file");
         });
-        assert_eq!("-rw-r--r-- 1024B Dec 31 18:00 a/file\n\
-                    drwxr-x--- 0B Dec 31 18:00 a/dir\n",
+        assert_eq!("drwxr-x--- 0B Dec 31 18:00 a/dir\n\
+                    -rw-r--r-- 1024B Dec 31 18:00 a/file\n",
                    output.as_str());
     }
 
