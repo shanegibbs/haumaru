@@ -26,6 +26,7 @@ use rusqlite::Connection;
 use std::fmt;
 use std::borrow::Borrow;
 use std::io::{Read, Write};
+use time::Timespec;
 
 use engine::DefaultEngine;
 use filesystem::Change;
@@ -36,13 +37,21 @@ pub trait Engine {
     fn run(&mut self) -> Result<u64, Box<Error>>;
     fn process_change(&mut self, backup_set: u64, change: Change) -> Result<(), Box<Error>>;
     fn verify_store(&mut self) -> Result<(), Box<Error>>;
-    fn restore(&mut self, key: &str, target: &str) -> Result<(), Box<Error>>;
-    fn list(&mut self, key: &str, out: &mut Write) -> Result<(), Box<Error>>;
+    fn restore(&mut self,
+               key: &str,
+               from: Option<Timespec>,
+               target: &str)
+               -> Result<(), Box<Error>>;
+    fn list(&mut self,
+            key: &str,
+            from: Option<Timespec>,
+            out: &mut Write)
+            -> Result<(), Box<Error>>;
 }
 
 pub trait Index {
-    fn latest(&mut self, path: String) -> Result<Option<Node>, Box<Error>>;
-    fn list(&mut self, path: String) -> Result<Vec<Node>, Box<Error>>;
+    fn get(&mut self, path: String, from: Option<Timespec>) -> Result<Option<Node>, Box<Error>>;
+    fn list(&mut self, path: String, from: Option<Timespec>) -> Result<Vec<Node>, Box<Error>>;
     fn visit_all_hashable(&mut self,
                           f: &mut FnMut(Node) -> Result<(), Box<Error>>)
                           -> Result<(), Box<Error>>;
@@ -127,6 +136,10 @@ impl fmt::Display for HaumaruError {
     }
 }
 
+fn split_key(key: &str) -> (String, Option<Timespec>) {
+    (key.to_string(), None)
+}
+
 pub fn run(config: EngineConfig) -> Result<(), HaumaruError> {
 
     let mut pathb = PathBuf::new();
@@ -208,16 +221,19 @@ pub fn verify(config: EngineConfig) -> Result<(), HaumaruError> {
 }
 
 pub fn restore(config: EngineConfig, key: &str, target: &str) -> Result<(), HaumaruError> {
+    let (key, from) = split_key(key);
     setup_and_run(config,
-                  |eng| eng.restore(key, target).map_err(|e| HaumaruError::Engine(e)))
+                  |eng| eng.restore(&key, from, target).map_err(|e| HaumaruError::Engine(e)))
 }
 
 pub fn list(config: EngineConfig, key: &str) -> Result<(), HaumaruError> {
     use std::io::Cursor;
 
+    let (key, from) = split_key(key);
+
     let mut cur = Cursor::new(Vec::new());
     setup_and_run(config,
-                  |eng| eng.list(key, &mut cur).map_err(|e| HaumaruError::Engine(e)))
+                  |eng| eng.list(&key, from, &mut cur).map_err(|e| HaumaruError::Engine(e)))
         ?;
     let content = String::from_utf8(cur.into_inner()).expect("from_utf8");
     println!("{}", content);

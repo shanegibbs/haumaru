@@ -194,7 +194,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
             for entry in read_dir(&p)? {
                 ls.push(entry?);
             }
-            let known_nodes = self.index.list(get_key(self.config.path(), &p))?;
+            let known_nodes = self.index.list(get_key(self.config.path(), &p), None)?;
 
             // process each item that exists
             for entry in &ls {
@@ -257,6 +257,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
     fn restore_node(&mut self,
                     node: Node,
                     node_base: &str,
+                    from: Option<Timespec>,
                     target: &str)
                     -> StdResult<(), Box<StdError>> {
 
@@ -276,8 +277,8 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
         if node.is_dir() {
             debug!("Creating dir {:?}", restore_path);
             create_dir_all(restore_path)?;
-            for node in self.index.list(node.path().to_string())? {
-                self.restore_node(node, node_base, target)?;
+            for node in self.index.list(node.path().to_string(), from)? {
+                self.restore_node(node, node_base, from, target)?;
             }
         } else if node.is_file() {
             let hash = node.hash().as_ref().expect("File must have hash");
@@ -476,7 +477,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
         debug!("Change key = {}", key);
 
         let node = self.index
-            .latest(key.clone())
+            .get(key.clone(), None)
             .map_err(|e| DefaultEngineError::Index(e))?;
         let file = self.backup_path()
             .get_file(change.path())
@@ -590,21 +591,25 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
         Ok(())
     }
 
-    fn restore(&mut self, key: &str, target: &str) -> StdResult<(), Box<StdError>> {
+    fn restore(&mut self,
+               key: &str,
+               from: Option<Timespec>,
+               target: &str)
+               -> StdResult<(), Box<StdError>> {
 
         if key.is_empty() {
             info!("Performing full restore to {}", target);
 
             create_dir_all(target)?;
-            for node in self.index.list("".to_string())? {
-                self.restore_node(node, "", target)?;
+            for node in self.index.list("".to_string(), from)? {
+                self.restore_node(node, "", from, target)?;
             }
             Ok(())
 
         } else {
 
             info!("Restoring {} to {}", key, target);
-            let node = match self.index.latest(key.to_string())? {
+            let node = match self.index.get(key.to_string(), from)? {
                 Some(n) => n,
                 None => {
                     return Err(box DefaultEngineError::Other(format!("Not Found: {:?}", key)));
@@ -616,20 +621,24 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
             let parent = tmp.parent().expect("restore.parent").to_str().expect("UTF-8 validity");
             debug!("Parent of key is {:?}", parent);
 
-            self.restore_node(node, parent, target)
+            self.restore_node(node, parent, from, target)
         }
     }
 
-    fn list(&mut self, key: &str, out: &mut Write) -> StdResult<(), Box<StdError>> {
+    fn list(&mut self,
+            key: &str,
+            from: Option<Timespec>,
+            out: &mut Write)
+            -> StdResult<(), Box<StdError>> {
 
         if key == "" {
-            for node in self.index.list("".to_string())? {
+            for node in self.index.list("".to_string(), from)? {
                 write_ls_node(out, &node);
             }
             return Ok(());
         }
 
-        let node = match self.index.latest(key.to_string())? {
+        let node = match self.index.get(key.to_string(), from)? {
             Some(n) => n,
             None => {
                 return Err(box DefaultEngineError::Other(format!("Not Found: {}", key)));
@@ -645,7 +654,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
             write!(out, "SHA256: {}\n", node.hash_string()).expect("write");
 
         } else if node.is_dir() {
-            for node in self.index.list(node.path().to_string())? {
+            for node in self.index.list(node.path().to_string(), from)? {
                 write_ls_node(out, &node);
             }
         }
@@ -701,7 +710,7 @@ mod test {
         let mut engine = DefaultEngine::new(config, HashSet::new(), &mut index, store)
             .expect("new engine");
         let mut cur = Cursor::new(Vec::new());
-        engine.list(key, &mut cur).expect("list");
+        engine.list(key, None, &mut cur).expect("list");
         String::from_utf8(cur.into_inner()).expect("from_utf8")
     }
 

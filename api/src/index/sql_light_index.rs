@@ -126,7 +126,19 @@ static GET_LATEST_QUERY_SQL: &'static str = "
     ORDER BY node.id DESC
     LIMIT 1";
 
-static LIST_PATH_QUERY_SQL: &'static str = "
+static GET_FROM_QUERY_SQL: &'static str = "
+    SELECT *
+    FROM node
+    INNER JOIN path
+        ON path.id = node.path_id
+    INNER JOIN backup_set
+        ON node.backup_set_id = backup_set.id
+    WHERE path.path = ?
+        AND backup_set.at <= ?
+    ORDER BY node.id DESC
+    LIMIT 1";
+
+static LIST_LATEST_QUERY_SQL: &'static str = "
     SELECT node.id as id, path.path, backup_set_id, node.kind, node.mtime, node.size, node.mode,
         node.deleted, node.hash
     FROM node
@@ -137,6 +149,24 @@ static LIST_PATH_QUERY_SQL: &'static str = "
         FROM node INNER JOIN path as parent_path
             ON node.parent_id = parent_path.id
         WHERE parent_path.path = ?
+        GROUP BY path_id
+    )
+    ORDER BY path.path ASC";
+
+static LIST_FROM_QUERY_SQL: &'static str = "
+    SELECT node.id as id, path.path, backup_set_id, node.kind, node.mtime, node.size, node.mode,
+        node.deleted, node.hash
+    FROM node
+    INNER JOIN path
+        ON path.id = node.path_id
+    INNER JOIN backup_set
+        ON node.backup_set_id = backup_set.id
+    WHERE node.id IN (
+        SELECT MAX(node.id)
+        FROM node INNER JOIN path as parent_path
+            ON node.parent_id = parent_path.id
+        WHERE parent_path.path = ?
+            AND backup_set.at <= ?
         GROUP BY path_id
     )
     ORDER BY path.path ASC";
@@ -156,7 +186,9 @@ pub struct SqlLightIndex<'a> {
     insert_node: Statement<'a>,
     get_all_hashable: Statement<'a>,
     get_latest: Statement<'a>,
-    list_path: Statement<'a>,
+    get_from: Statement<'a>,
+    list_latest: Statement<'a>,
+    list_from: Statement<'a>,
     insert_backup_set: Statement<'a>,
 }
 
@@ -211,8 +243,14 @@ impl<'a> SqlLightIndex<'a> {
         let get_latest = try!(conn.prepare(GET_LATEST_QUERY_SQL)
             .map_err(|e| SqlLightIndexError::CreateStatement("get_latest".to_string(), e)));
 
-        let list_path = conn.prepare(LIST_PATH_QUERY_SQL)
-            .map_err(|e| SqlLightIndexError::CreateStatement("last_path".to_string(), e))?;
+        let get_from = try!(conn.prepare(GET_FROM_QUERY_SQL)
+            .map_err(|e| SqlLightIndexError::CreateStatement("get_from".to_string(), e)));
+
+        let list_latest = conn.prepare(LIST_LATEST_QUERY_SQL)
+            .map_err(|e| SqlLightIndexError::CreateStatement("last_latest".to_string(), e))?;
+
+        let list_from = conn.prepare(LIST_FROM_QUERY_SQL)
+            .map_err(|e| SqlLightIndexError::CreateStatement("last_from".to_string(), e))?;
 
         Ok(SqlLightIndex {
             conn: conn,
@@ -221,7 +259,9 @@ impl<'a> SqlLightIndex<'a> {
             insert_node: insert_node,
             get_all_hashable: get_all_hashable,
             get_latest: get_latest,
-            list_path: list_path,
+            get_from: get_from,
+            list_latest: list_latest,
+            list_from: list_from,
             insert_backup_set: insert_backup_set,
         })
     }
@@ -295,8 +335,11 @@ impl<'a> Index for SqlLightIndex<'a> {
         Ok(())
     }
 
-    fn latest(&mut self, path: String) -> Result<Option<Node>, Box<Error>> {
-        let mut rows = self.get_latest.query(&[&path]).unwrap();
+    fn get(&mut self, path: String, from: Option<Timespec>) -> Result<Option<Node>, Box<Error>> {
+        let mut rows = match from {
+            None => self.get_latest.query(&[&path]).expect("get_latest_query"),
+            Some(t) => self.get_from.query(&[&path, &t.sec]).expect("get_from_query"),
+        };
         let row = rows.next();
         if row.is_none() {
             debug!("No record found for key {:?}", path);
@@ -423,13 +466,15 @@ impl<'a> Index for SqlLightIndex<'a> {
         vec
     }
 
-    fn list(&mut self, path: String) -> Result<Vec<Node>, Box<Error>> {
+    fn list(&mut self, path: String, from: Option<Timespec>) -> Result<Vec<Node>, Box<Error>> {
         trace!("Listing path {}", path);
 
-        let mut rows = self.list_path
-            .query(&[&path])
+        let mut rows = match from {
+                None => self.list_latest.query(&[&path]),
+                Some(t) => self.list_from.query(&[&path, &t.sec]),
+            }
             .map_err(|e| {
-                SqlLightIndexError::FailedStatement(format!("list_path failed for {}", path), e)
+                SqlLightIndexError::FailedStatement(format!("list failed for {}", path), e)
             })?;
 
         let mut v = vec![];
@@ -569,7 +614,7 @@ mod test {
         let mtime = n.mtime();
 
         index.insert(n.clone()).unwrap();
-        let mut latest = index.latest("a".to_string()).expect("ok").expect("some");
+        let mut latest = index.get("a".to_string(), None).expect("ok").expect("some");
         latest.set_mtime(mtime.clone());
         assert_eq!(n, latest);
     }
@@ -607,7 +652,7 @@ mod test {
 
         index.insert(n).unwrap();
 
-        let n = index.latest("a".to_string()).unwrap();
+        let n = index.get("a".to_string(), None).unwrap();
         assert!(n.is_some());
         let n = n.unwrap();
 
@@ -615,6 +660,106 @@ mod test {
         assert_eq!(&Timespec::new(10, 0), n.mtime());
         assert_eq!(500, n.mode());
         assert_eq!(1024, n.size());
+    }
+
+    #[test]
+    fn get_file_from() {
+        let _ = env_logger::init();
+        let conn = Connection::open_in_memory().expect("Connection");
+        let mut index = SqlLightIndex::new(&conn).expect("SqliteIndex");
+
+        let bs_a = index.create_backup_set(600).expect("bs_a");
+        let bs_b = index.create_backup_set(1200).expect("bs_b");
+
+        {
+            let mtime = Timespec::new(10, 0);
+            let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(bs_a);
+            n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                            20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
+            index.insert(n).expect("insert");
+        }
+
+        {
+            let mtime = Timespec::new(11, 0);
+            let mut n = Node::new_file("a", mtime, 1025, 500).with_backup_set(bs_b);
+            n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                            20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
+            index.insert(n).expect("insert");
+        }
+
+        {
+            let n = index.get("a".to_string(), Some(Timespec::new(500, 0))).expect("get");
+            assert!(n.is_none());
+        }
+        {
+            let n = index.get("a".to_string(), None).expect("get");
+            assert!(n.is_some());
+            let n = n.expect("Some node");
+            assert_eq!(1025, n.size());
+        }
+        {
+            let n = index.get("a".to_string(), Some(Timespec::new(700, 0))).expect("get");
+            assert!(n.is_some());
+            let n = n.expect("Some node");
+            assert_eq!(1024, n.size());
+        }
+        {
+            let n = index.get("a".to_string(), Some(Timespec::new(1300, 0))).expect("get");
+            assert!(n.is_some());
+            let n = n.expect("Some node");
+            assert_eq!(1025, n.size());
+        }
+    }
+
+    #[test]
+    fn list_from() {
+        let _ = env_logger::init();
+        let conn = Connection::open_in_memory().expect("Connection");
+        let mut index = SqlLightIndex::new(&conn).expect("SqliteIndex");
+
+        let bs_a = index.create_backup_set(600).expect("bs_a");
+        let bs_b = index.create_backup_set(1200).expect("bs_b");
+
+        {
+            let mtime = Timespec::new(10, 0);
+            let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(bs_a);
+            n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                            20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
+            index.insert(n).expect("insert");
+        }
+
+        {
+            let mtime = Timespec::new(11, 0);
+            let mut n = Node::new_file("b", mtime, 1025, 500).with_backup_set(bs_b);
+            n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                            20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
+            index.insert(n).expect("insert");
+        }
+
+        {
+            let list = index.list("".to_string(), Some(Timespec::new(500, 0))).expect("list");
+            assert!(list.is_empty());
+        }
+        {
+            let list = index.list("".to_string(), None).expect("list");
+            assert!(!list.is_empty());
+            assert!(list.get(0).expect("node").path() == "a");
+            assert!(list.get(1).expect("node").path() == "b");
+            assert_eq!(2, list.len());
+        }
+        {
+            let list = index.list("".to_string(), Some(Timespec::new(700, 0))).expect("list");
+            assert!(!list.is_empty());
+            assert!(list.get(0).expect("node").path() == "a");
+            assert_eq!(1, list.len());
+        }
+        {
+            let list = index.list("".to_string(), Some(Timespec::new(1300, 0))).expect("list");
+            assert!(!list.is_empty());
+            assert!(list.get(0).expect("node").path() == "a");
+            assert!(list.get(1).expect("node").path() == "b");
+            assert_eq!(2, list.len());
+        }
     }
 
     #[test]
@@ -628,7 +773,7 @@ mod test {
 
         index.insert(n).unwrap();
 
-        let n = index.latest("a".to_string()).unwrap();
+        let n = index.get("a".to_string(), None).unwrap();
         assert!(n.is_some());
         let n = n.unwrap();
 
@@ -655,7 +800,7 @@ mod test {
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
         index.insert(file_a.clone()).unwrap();
 
-        let list = index.list("dir".to_string()).unwrap();
+        let list = index.list("dir".to_string(), None).unwrap();
         let expected: Vec<Node> = vec![file_a];
 
         assert_eq!(expected, list);
@@ -672,7 +817,7 @@ mod test {
 
         index.insert(n.clone()).unwrap();
 
-        let list = index.list("".to_string()).unwrap();
+        let list = index.list("".to_string(), None).unwrap();
 
         let expected: Vec<Node> = vec![n];
         assert_eq!(expected, list);

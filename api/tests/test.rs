@@ -400,7 +400,7 @@ fn restore_file_from_root() {
         create_dir_all(&restore_path).expect("mkdir restore");
         let restore_path_str = &restore_path.to_str().expect("Path to_str");
 
-        engine.restore("a", restore_path_str).expect("engine restore");
+        engine.restore("a", None, restore_path_str).expect("engine restore");
 
         let mut restored_file = restore_path.clone();
         restored_file.push("a");
@@ -432,7 +432,7 @@ fn restore_file_from_dir() {
         create_dir_all(&restore_path).expect("mkdir restore");
         let restore_path_str = &restore_path.to_str().expect("Path to_str");
 
-        engine.restore("dir/a", restore_path_str).expect("engine restore");
+        engine.restore("dir/a", None, restore_path_str).expect("engine restore");
 
         let mut restored_file = restore_path.clone();
         restored_file.push("a");
@@ -464,7 +464,7 @@ fn restore_dir_from_root() {
         create_dir_all(&restore_path).expect("mkdir restore");
         let restore_path_str = &restore_path.to_str().expect("Path to_str");
 
-        engine.restore("dir", restore_path_str).expect("engine restore");
+        engine.restore("dir", None, restore_path_str).expect("engine restore");
 
         let mut restored_file = restore_path.clone();
         restored_file.push("dir");
@@ -498,7 +498,7 @@ fn restore_dir_from_dir() {
         create_dir_all(&restore_path).expect("mkdir restore");
         let restore_path_str = &restore_path.to_str().expect("Path to_str");
 
-        engine.restore("dirA/dirB", restore_path_str).expect("engine restore");
+        engine.restore("dirA/dirB", None, restore_path_str).expect("engine restore");
 
         let mut restored_file = restore_path.clone();
         restored_file.push("dirB");
@@ -538,7 +538,7 @@ fn full_restore() {
         create_dir_all(&restore_path).expect("mkdir restore");
         let restore_path_str = &restore_path.to_str().expect("Path to_str");
 
-        engine.restore("", restore_path_str).expect("engine restore");
+        engine.restore("", None, restore_path_str).expect("engine restore");
 
         {
             let mut restored_file = restore_path.clone();
