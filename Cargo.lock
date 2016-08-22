@@ -122,6 +122,7 @@ dependencies = [
  "fsevent 0.2.14 (git+https://github.com/shanegibbs/fsevent-rust.git)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "notify 2.6.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "regex 0.1.73 (registry+https://github.com/rust-lang/crates.io-index)",
  "rusqlite 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "rust-crypto 0.2.36 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc-serialize 0.3.19 (registry+https://github.com/rust-lang/crates.io-index)",

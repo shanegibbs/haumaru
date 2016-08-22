@@ -7,6 +7,10 @@ extern crate time;
 extern crate rusqlite;
 extern crate crypto;
 extern crate rustc_serialize;
+extern crate regex;
+
+#[cfg(test)]
+extern crate env_logger;
 
 pub mod filesystem;
 pub mod engine;
@@ -137,7 +141,54 @@ impl fmt::Display for HaumaruError {
 }
 
 fn split_key(key: &str) -> (String, Option<Timespec>) {
-    (key.to_string(), None)
+    if !key.contains("@") {
+        return (key.to_string(), None);
+    }
+
+    use regex::Regex;
+
+    let split_re = Regex::new(r"^(.*)@(.*)$").unwrap();
+    let cap = split_re.captures(key).unwrap();
+
+    let key_str = cap.at(1).expect("group1");
+    let unix_ts_str = cap.at(2).expect("group2");
+
+    debug!("key_str={}", key_str);
+    debug!("key_unix_ts={}", unix_ts_str);
+
+    let unix_ts = unix_ts_str.parse::<i64>().expect("unix timestamp");
+
+    (key_str.to_string(),
+     Some(Timespec {
+        sec: unix_ts,
+        nsec: 0,
+    }))
+}
+
+#[test]
+fn test_split_key() {
+    let _ = env_logger::init();
+
+    let (key, ts) = split_key("abc");
+    assert_eq!("abc", key);
+    assert_eq!(ts, None);
+
+    let (key, ts) = split_key("abc@123");
+    assert_eq!("abc", key);
+    assert_eq!(ts,
+               Some(Timespec {
+                   sec: 123,
+                   nsec: 0,
+               }));
+
+    let (key, ts) = split_key("@123");
+    assert_eq!("", key);
+    assert_eq!(ts,
+               Some(Timespec {
+                   sec: 123,
+                   nsec: 0,
+               }));
+
 }
 
 pub fn run(config: EngineConfig) -> Result<(), HaumaruError> {

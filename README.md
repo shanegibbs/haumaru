@@ -30,3 +30,7 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 * ~~Backup to local directory~~
 * ~~Scan and monitor all basic file and dir changes~~
 * ~~Use SQLite for index~~
+
+# Using timestamps
+
+haumaru ls -w target/work -k myproject@$(date -u -v-8d +'%s')

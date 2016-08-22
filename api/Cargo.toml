@@ -11,6 +11,7 @@ time = "*"
 rust-crypto = "*"
 rustc-serialize = "*"
 env_logger = "*"
+regex = "*"
 
 [target.'cfg(apple)'.dependencies]
 fsevent =  { git = "https://github.com/shanegibbs/fsevent-rust.git" }
