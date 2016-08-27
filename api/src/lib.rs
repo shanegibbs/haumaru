@@ -22,6 +22,7 @@ pub mod storage;
 pub mod config;
 
 mod node;
+mod hasher;
 
 pub use config::{Config, AsConfig};
 pub use engine::EngineConfig;
@@ -72,7 +73,7 @@ pub trait Index {
 }
 
 pub trait Storage {
-    fn send(&self, String, Node) -> Result<Node, Box<Error>>;
+    fn send(&self, hash: &[u8], Box<Read>) -> Result<(), Box<Error>>;
     fn retrieve(&self, hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>>;
     fn verify(&self, Node) -> Result<Option<Node>, Box<Error>>;
 }

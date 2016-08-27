@@ -9,7 +9,6 @@ use std::error::Error as StdError;
 use std::fmt::{Formatter, Display};
 use std::fmt::Error as FmtError;
 use std::time::Duration;
-use std::num::ParseIntError;
 use time;
 use time::{Timespec, at, strftime};
 use std::fs::create_dir_all;
@@ -19,6 +18,7 @@ use rustc_serialize::hex::ToHex;
 
 use filesystem::Change;
 use {Node, Engine, Index, Storage, get_key};
+use hasher::Hasher;
 
 #[derive(Debug)]
 pub struct EngineConfig {
@@ -54,17 +54,6 @@ impl EngineConfig {
     pub fn with_max_file_size(mut self, max_file_size: u64) -> Self {
         self.max_file_size = Some(max_file_size);
         self
-    }
-
-    pub fn new_depre(path: &str, working: &str, period: &str) -> StdResult<Self, ParseIntError> {
-        let period = period.parse::<u32>()?;
-        Ok(EngineConfig {
-            path: Some(path.to_string()),
-            working: working.to_string(),
-            period: Some(period),
-            max_file_size: None,
-            detached: false,
-        })
     }
 
     pub fn detached(mut self) -> Self {
@@ -347,6 +336,48 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
 
         Ok(())
     }
+
+    fn send(&self, mut n: Node) -> Result<Node> {
+        use std::io::{Cursor, copy};
+
+        debug!("Sending {:?}", n);
+
+        let mut path = PathBuf::new();
+        path.push(self.config.path());
+        path.push(n.path());
+
+        let mut buffer = Cursor::new(vec![]);
+
+        let mut src_file = File::open(&path)
+            .map_err(|e| DefaultEngineError::Storage(format!("Faild opening {:?}", path), box e))?;
+
+        match copy(&mut src_file, &mut buffer) {
+            Err(e) => {
+                return Err(DefaultEngineError::Storage(format!("Faild reading {:?}", path), box e));
+            }
+            _ => (),
+        };
+
+        buffer.set_position(0);
+
+        let mut hasher = Hasher::new();
+        match copy(&mut buffer, &mut hasher) {
+            Err(e) => {
+                return Err(DefaultEngineError::Storage(format!("Faild to hash {:?}", path), box e));
+            }
+            _ => (),
+        };
+
+        let vec = hasher.result();
+        n.set_hash(vec.clone());
+
+        buffer.set_position(0);
+        self.storage
+            .send(&vec, box buffer)
+            .map_err(|e| DefaultEngineError::Storage(format!("Failed to send {}:", n.path()), e))?;
+
+        Ok(n)
+    }
 }
 
 fn perms_string(mode: u32) -> String {
@@ -547,16 +578,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                         debug!("Detected NEW on {:?}, {:?}", change, new_node);
                         let sent_file = match new_node.is_dir() {
                             true => new_node,
-                            false => {
-                                try!(self.storage
-                                    .send(self.config.path().to_string(), new_node)
-                                    .map_err(|e| {
-                                        DefaultEngineError::Storage(format!("Failed to send \
-                                                                             file: {}",
-                                                                            key),
-                                                                    e)
-                                    }))
-                            }
+                            false => self.send(new_node)?,
                         };
                         let _inserted_file = try!(self.index
                             .insert(sent_file.with_backup_set(backup_set))
@@ -584,16 +606,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
                                new_node);
                         let sent_file = match new_node.is_dir() {
                             true => new_node,
-                            false => {
-                                try!(self.storage
-                                    .send(self.config.path().to_string(), new_node)
-                                    .map_err(|e| {
-                                        DefaultEngineError::Storage(format!("Failed to send \
-                                                                             file: {}",
-                                                                            key),
-                                                                    e)
-                                    }))
-                            }
+                            false => self.send(new_node)?,
                         };
                         let _inserted_file = try!(self.index
                             .insert(sent_file.with_backup_set(backup_set))

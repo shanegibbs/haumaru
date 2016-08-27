@@ -5,7 +5,7 @@ use crypto::sha2::Sha256;
 use std::path::PathBuf;
 use std::fs::File;
 use std::io;
-use std::io::{Read, Write};
+use std::io::{Read, copy};
 use std::fs::{create_dir_all, rename};
 use rustc_serialize::hex::ToHex;
 
@@ -72,51 +72,27 @@ fn hash_path(hash: &String) -> PathBuf {
 }
 
 impl Storage for LocalStorage {
-    // TODO change args to just std::io::Read
-    fn send(&self, base: String, mut n: Node) -> Result<Node, Box<Error>> {
-        use std::io::{Cursor, copy};
+    fn send(&self, hash: &[u8], mut ins: Box<Read>) -> Result<(), Box<Error>> {
+        // fn send(&self, base: String, mut n: Node) -> Result<Node, Box<Error>> {
 
-        debug!("Sending {:?}", n);
+        let hex = hash.to_hex();
 
-        let mut path = PathBuf::new();
-        path.push(base);
-        path.push(n.path());
+        let mut hash_filename = PathBuf::new();
+        hash_filename.push(&self.target);
+        hash_filename.push(hash_path(&hex));
+
+        if hash_filename.exists() {
+            debug!("Already have {}", hex);
+            return Ok(());
+        }
+
+        debug!("Sending {:?}", hash);
 
         let mut dst_path = PathBuf::new();
         dst_path.push(&self.target);
         dst_path.push("_");
 
-        debug!("Hashing {:?} to {:?}", path, dst_path);
-        let mut hasher = Sha256::new();
-
-        let buffer: Vec<u8> = vec![];
-        let mut cursor = Cursor::new(buffer);
-
-        {
-            let mut src_file = File::open(path)?;
-            let mut buffer = [0; 65536];
-
-            loop {
-                let read = src_file.read(&mut buffer[..])?;
-                if read == 0 {
-                    break;
-                }
-
-                trace!("Read {} bytes", read);
-                hasher.input(&buffer[0..read]);
-                cursor.write(&buffer[0..read])?;
-            }
-        }
-
-        // calc hash
-        let mut bytes = [0u8; 32];
-        hasher.result(&mut bytes);
-        let mut vec = Vec::with_capacity(32);
-        vec.append(&mut bytes.to_vec());
-        n.set_hash(vec);
-
-        // hex string
-        let hex = n.hash_string();
+        debug!("Writing to {:?}", dst_path);
 
         // move into final name
         let mut dir = PathBuf::new();
@@ -127,32 +103,21 @@ impl Storage for LocalStorage {
             .map_err(|e| {
                 LocalStorageError::Generic(format!("Failed to create dir {:?}: {}", dir, e))
             })?;
-        let mut hash_filename = PathBuf::new();
-        hash_filename.push(&self.target);
-        hash_filename.push(hash_path(&hex));
 
-        if hash_filename.exists() {
-            debug!("Already have {}", hex);
-        } else {
+        debug!("Writing to {:?}", dst_path);
+        let mut dst_file = File::create(&dst_path)?;
+        copy(&mut ins, &mut dst_file)
+            .map_err(|e| LocalStorageError::Io(format!("Failed writing to: {:?}", dst_path), e))?;
 
-            debug!("Writing to {:?}", dst_path);
-            let mut dst_file = File::create(&dst_path)?;
-            cursor.set_position(0);
-            copy(&mut cursor, &mut dst_file)
-                .map_err(|e| {
-                    LocalStorageError::Io(format!("Failed writing to: {:?}", dst_path), e)
-                })?;
+        debug!("Moving new hash to {:?}", hash_filename);
+        rename(dst_path, &hash_filename)
+            .map_err(|e| {
+                LocalStorageError::Generic(format!("Failed to rename to {:?}: {}",
+                                                   hash_filename,
+                                                   e))
+            })?;
 
-            debug!("Moving new hash to {:?}", hash_filename);
-            rename(dst_path, &hash_filename)
-                .map_err(|e| {
-                    LocalStorageError::Generic(format!("Failed to rename to {:?}: {}",
-                                                       hash_filename,
-                                                       e))
-                })?;
-        }
-
-        Ok(n)
+        Ok(())
     }
 
     fn retrieve(&self, hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>> {
@@ -213,10 +178,9 @@ mod test {
 
     use super::*;
     use std::fs::{File, create_dir_all, remove_dir_all};
-    use std::io::{Read, Write};
+    use std::io::{Cursor, Read};
     use std::path::PathBuf;
-    use {EngineConfig, Node, Storage};
-    use time::Timespec;
+    use {EngineConfig, Storage};
 
     #[test]
     fn send_empty_file() {
@@ -229,21 +193,15 @@ mod test {
         let path = PathBuf::from(test_dir.clone()).canonicalize().expect("canonicalize test_dir");
         // end setup
 
-        let mut filename = path.clone();
-        filename.push("a");
-        let content = "";
+        let config = EngineConfig::new(test_dir.clone());
 
-        {
-            let mut f = File::create(&filename).expect("create filename");
-            f.write_all(content.as_bytes()).expect("write bytes");
-        }
-
-        let config = EngineConfig::new("", &test_dir, "900").expect("new engine config");
+        let hash = vec![227, 176, 196, 66, 152, 252, 28, 20, 154, 251, 244, 200, 153, 111, 185,
+                        36, 39, 174, 65, 228, 100, 155, 147, 76, 164, 149, 153, 27, 120, 82, 184,
+                        85];
+        let cursor = Cursor::new(vec![]);
 
         let storage = LocalStorage::new(&config).expect("new local storage");
-        let node = storage.send(test_dir.clone(),
-                  Node::new_file("a", Timespec::new(10, 0), 0, 490))
-            .expect("Send node");
+        storage.send(&hash, box cursor).expect("Send stream");
 
         let mut hash_filename = path.clone();
         hash_filename.push("store");
@@ -255,11 +213,6 @@ mod test {
         let mut s = String::new();
         f.read_to_string(&mut s).expect("read hash_filename");
         assert_eq!(s, "");
-        assert_eq!(&Some(vec![227, 176, 196, 66, 152, 252, 28, 20, 154, 251, 244, 200, 153, 111,
-                              185, 36, 39, 174, 65, 228, 100, 155, 147, 76, 164, 149, 153, 27,
-                              120, 82, 184, 85]),
-                   node.hash())
-
     }
 
     #[test]
@@ -273,21 +226,16 @@ mod test {
         let path = PathBuf::from(test_dir.clone()).canonicalize().expect("canonicalize test_dir");
         // end setup
 
-        let mut filename = path.clone();
-        filename.push("a");
+        let config = EngineConfig::new(test_dir.clone());
+
+        let hash = vec![116, 231, 229, 187, 157, 34, 214, 219, 38, 191, 118, 148, 109, 64, 255,
+                        243, 234, 159, 3, 70, 184, 132, 253, 6, 148, 146, 15, 204, 250, 209, 94,
+                        51];
         let content = "0123456789abcdefghijklmnopqrstuvwxyz";
-
-        {
-            let mut f = File::create(&filename).expect("create filename");
-            f.write_all(content.as_bytes()).expect("write bytes");
-        }
-
-        let config = EngineConfig::new("", &test_dir, "900").expect("new engine config");
+        let cursor = Cursor::new(content.to_string().into_bytes());
 
         let storage = LocalStorage::new(&config).expect("new local storage");
-        let node = storage.send(test_dir.clone(),
-                  Node::new_file("a", Timespec::new(10, 0), 0, 490))
-            .expect("Send node");
+        storage.send(&hash, box cursor).expect("Send stream");
 
         let mut hash_filename = path.clone();
         hash_filename.push("store");
@@ -299,10 +247,5 @@ mod test {
         let mut s = String::new();
         f.read_to_string(&mut s).expect("read hash_filename");
         assert_eq!(s, content);
-        assert_eq!(&Some(vec![116, 231, 229, 187, 157, 34, 214, 219, 38, 191, 118, 148, 109, 64,
-                              255, 243, 234, 159, 3, 70, 184, 132, 253, 6, 148, 146, 15, 204,
-                              250, 209, 94, 51]),
-                   node.hash())
     }
-
 }

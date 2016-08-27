@@ -80,10 +80,8 @@ fn test_change<'a, F>(name: &str, f: F) -> Vec<Record>
     files_path.push("files");
     create_dir_all(&files_path).unwrap();
 
-    let config = EngineConfig::new(files_path.to_str().unwrap(),
-                                   working_path.to_str().unwrap(),
-                                   "900")
-        .unwrap();
+    let config = EngineConfig::new(working_path.to_str().unwrap().to_string())
+        .with_path(files_path.to_str().unwrap().to_string());
 
     let store = LocalStorage::new(&config).unwrap();
 
