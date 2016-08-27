@@ -1,5 +1,6 @@
 #![deny(warnings)]
-#![feature(question_mark, box_syntax, try_from)]
+#![feature(question_mark, box_syntax, try_from, custom_derive, plugin)]
+#![plugin(serde_macros)]
 #[macro_use]
 extern crate log;
 extern crate notify;
@@ -8,6 +9,8 @@ extern crate rusqlite;
 extern crate crypto;
 extern crate rustc_serialize;
 extern crate regex;
+extern crate serde;
+extern crate serde_yaml;
 
 #[cfg(test)]
 extern crate env_logger;
@@ -36,6 +39,41 @@ use engine::DefaultEngine;
 use filesystem::Change;
 use index::SqlLightIndex;
 use storage::LocalStorage;
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct Config {
+    period: Option<String>,
+    max_size: Option<String>,
+}
+
+impl Config {
+    pub fn period(&self) -> String {
+        self.period.clone().unwrap_or("900".to_string())
+    }
+}
+
+pub trait AsConfig {
+    fn as_config(&mut self) -> Result<Config, Box<Error>>;
+}
+
+impl<T: Read> AsConfig for T {
+    fn as_config(&mut self) -> Result<Config, Box<Error>> {
+        let mut buf = String::new();
+        self.read_to_string(&mut buf)?;
+        let config: Config = serde_yaml::from_str(&buf)
+            .map_err(|e| box HaumaruError::Config(box e))?;
+        Ok(config)
+    }
+}
+
+// impl AsConfig for String {
+// fn as_config(&mut self) -> Result<Config, Box<Error>> {
+// let config: Config = serde_yaml::from_str(&self)
+// .map_err(|e| box HaumaruError::Config(box e))?;
+// Ok(config)
+// }
+// }
+//
 
 pub trait Engine {
     fn run(&mut self) -> Result<u64, Box<Error>>;
@@ -99,6 +137,7 @@ impl Record {
 #[derive(Debug)]
 pub enum HaumaruError {
     SqlLite(String, SqliteError),
+    Config(Box<Error>),
     Index(Box<Error>),
     Storage(Box<Error>),
     Engine(Box<Error>),
@@ -108,6 +147,7 @@ pub enum HaumaruError {
 impl Error for HaumaruError {
     fn description(&self) -> &str {
         match *self {
+            HaumaruError::Config(ref _e) => "Failed to load config",
             HaumaruError::SqlLite(ref _s, ref _e) => "SqlLite error",
             HaumaruError::Index(ref _e) => "Index error",
             HaumaruError::Storage(ref _e) => "Storage error",
@@ -118,6 +158,7 @@ impl Error for HaumaruError {
 
     fn cause(&self) -> Option<&Error> {
         match *self {
+            HaumaruError::Config(ref e) => Some(e.borrow()),
             HaumaruError::SqlLite(ref _s, ref e) => Some(e),
             HaumaruError::Index(ref e) => Some(e.borrow()),
             HaumaruError::Storage(ref e) => Some(e.borrow()),
@@ -130,6 +171,7 @@ impl Error for HaumaruError {
 impl fmt::Display for HaumaruError {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match *self {
+            HaumaruError::Config(ref e) => write!(f, "Failed to load config file: {}", e)?,
             HaumaruError::SqlLite(ref s, ref e) => write!(f, "{}: {}", s, e)?,
             HaumaruError::Index(ref e) => write!(f, "{}", e)?,
             HaumaruError::Storage(ref e) => write!(f, "{}", e)?,

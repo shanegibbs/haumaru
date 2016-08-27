@@ -30,7 +30,10 @@ impl fmt::Display for CliError {
     }
 }
 
-fn app<'a, 'b>() -> App<'a, 'b> {
+fn app<'a, 'b>(default_path: &'a str,
+               default_working_path: &'a str,
+               config_file: &'a str)
+               -> App<'a, 'b> {
     return App::new("haumaru")
         .version("0.0.1a")
         .author("Shane Gibbs <shane@hands.net.nz>")
@@ -40,7 +43,7 @@ fn app<'a, 'b>() -> App<'a, 'b> {
             .short("c")
             .value_name("FILE")
             .help("Backup config")
-            .default_value(".haumaru/config")
+            .default_value(config_file)
             .takes_value(true))
         .subcommand(SubCommand::with_name("backup")
             .about("Start backup service")
@@ -49,22 +52,14 @@ fn app<'a, 'b>() -> App<'a, 'b> {
                 .short("p")
                 .value_name("PATH")
                 .help("Path to backup")
-                .default_value(".")
+                .default_value(default_path)
                 .takes_value(true))
             .arg(Arg::with_name("working")
                 .long("working")
                 .short("w")
                 .value_name("PATH")
                 .help("Working path for haumaru")
-                .default_value(".haumaru/working")
-                .takes_value(true)
-                .required(true))
-            .arg(Arg::with_name("interval")
-                .long("interval")
-                .short("i")
-                .value_name("SECONDS")
-                .help("Number of seconds between backups")
-                .default_value("900")
+                .default_value(default_working_path)
                 .takes_value(true)
                 .required(true)))
         .subcommand(SubCommand::with_name("verify")
@@ -74,7 +69,7 @@ fn app<'a, 'b>() -> App<'a, 'b> {
                 .short("w")
                 .value_name("PATH")
                 .help("Working path for haumaru")
-                .default_value(".haumaru/working")
+                .default_value(default_working_path)
                 .takes_value(true)
                 .required(true)))
         .subcommand(SubCommand::with_name("ls")
@@ -92,7 +87,7 @@ fn app<'a, 'b>() -> App<'a, 'b> {
                 .short("w")
                 .value_name("PATH")
                 .help("Working path for haumaru")
-                .default_value(".haumaru/working")
+                .default_value(default_working_path)
                 .takes_value(true)
                 .required(true)))
         .subcommand(SubCommand::with_name("restore")
@@ -118,23 +113,62 @@ fn app<'a, 'b>() -> App<'a, 'b> {
                 .short("w")
                 .value_name("PATH")
                 .help("Working path for haumaru")
-                .default_value(".haumaru/working")
+                .default_value(default_working_path)
                 .takes_value(true)
                 .required(true)));
 
 }
 
+fn find_config_file() -> (String, String, String) {
+    use std::path::{Path, PathBuf};
+
+    let mut current_dir: Option<PathBuf> =
+        Some(Path::new(".").canonicalize().expect("canonicalize").to_path_buf());
+
+    while let Some(c) = current_dir {
+        let mut working_path = c.clone();
+        working_path.push(".haumaru");
+        let mut config_file = working_path.clone();
+        config_file.push("config.yml");
+        if config_file.exists() && config_file.is_file() {
+            info!("Found config at {:?}", config_file);
+            return (c.to_str()
+                .expect("c.to_str")
+                .to_string(),
+                    working_path.to_str()
+                .expect("c.to_str")
+                .to_string(),
+                    config_file.to_str()
+                .expect("config_file.to_str")
+                .to_string());
+        }
+        current_dir = c.parent().map(|c| c.to_path_buf());
+    }
+
+    (".".to_string(), ".haumaru".to_string(), ".haumaru/config.yml".to_string())
+}
+
 fn run() -> Result<i64, Box<Error>> {
-    let matches = app().get_matches();
+    let (default_path, default_working_path, config_file) = find_config_file();
+    let matches = app(default_path.as_str(),
+                      default_working_path.as_str(),
+                      config_file.as_str())
+        .get_matches();
 
     let config = matches.value_of("config").ok_or(CliError::Missing("config".to_string()))?;
-    info!("Using config {}", config);
+    info!("Using config from {}", config);
+
+    use std::fs::File;
+    use haumaru_api::AsConfig;
+
+    let mut config_f = File::open(config)?;
+    let user_config = config_f.as_config()?;
+    info!("{:?}", user_config);
 
     if let Some(cmd) = matches.subcommand_matches("backup") {
         let path = cmd.value_of("path").ok_or(CliError::Missing("path".to_string()))?;
         let working = cmd.value_of("working").ok_or(CliError::Missing("working".to_string()))?;
-        let interval = cmd.value_of("interval").ok_or(CliError::Missing("interval".to_string()))?;
-        let config = haumaru_api::EngineConfig::new(path, working, interval)?;
+        let config = haumaru_api::EngineConfig::new(path, working, &user_config.period())?;
         haumaru_api::run(config)?;
 
     } else if let Some(cmd) = matches.subcommand_matches("verify") {
@@ -158,7 +192,11 @@ fn run() -> Result<i64, Box<Error>> {
         haumaru_api::restore(config, key, target)?;
 
     } else {
-        app().print_help().unwrap();
+        app(default_path.as_str(),
+            default_working_path.as_str(),
+            config_file.as_str())
+            .print_help()
+            .unwrap();
         println!("");
     }
 
