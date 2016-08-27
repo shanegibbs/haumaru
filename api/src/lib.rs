@@ -19,8 +19,11 @@ pub mod filesystem;
 pub mod engine;
 pub mod index;
 pub mod storage;
+pub mod config;
+
 mod node;
 
+pub use config::{Config, AsConfig};
 pub use engine::EngineConfig;
 pub use node::{Node, NodeKind};
 
@@ -39,41 +42,6 @@ use engine::DefaultEngine;
 use filesystem::Change;
 use index::SqlLightIndex;
 use storage::LocalStorage;
-
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub struct Config {
-    period: Option<String>,
-    max_size: Option<String>,
-}
-
-impl Config {
-    pub fn period(&self) -> String {
-        self.period.clone().unwrap_or("900".to_string())
-    }
-}
-
-pub trait AsConfig {
-    fn as_config(&mut self) -> Result<Config, Box<Error>>;
-}
-
-impl<T: Read> AsConfig for T {
-    fn as_config(&mut self) -> Result<Config, Box<Error>> {
-        let mut buf = String::new();
-        self.read_to_string(&mut buf)?;
-        let config: Config = serde_yaml::from_str(&buf)
-            .map_err(|e| box HaumaruError::Config(box e))?;
-        Ok(config)
-    }
-}
-
-// impl AsConfig for String {
-// fn as_config(&mut self) -> Result<Config, Box<Error>> {
-// let config: Config = serde_yaml::from_str(&self)
-// .map_err(|e| box HaumaruError::Config(box e))?;
-// Ok(config)
-// }
-// }
-//
 
 pub trait Engine {
     fn run(&mut self) -> Result<u64, Box<Error>>;

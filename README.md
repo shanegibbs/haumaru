@@ -5,10 +5,10 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 ## TODO
 
 ### Primary
-* S3 upload (hashes and backup_set records)
-* Refactor `Storage.send` to `Storage.send(Read, &[u8])`
-* Use transactions for updates
 * Max file size option
+* Refactor `Storage.send` to `Storage.send(Read, &[u8])`
+* S3 upload (hashes and backup_set records)
+* Use transactions for updates
 
 ### Secondary
 * Handle sym/hard links
