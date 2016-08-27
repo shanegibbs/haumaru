@@ -534,9 +534,11 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
             }
             Some(new_node) => {
 
-                if new_node.size() > 1024 * 1024 * 10 {
-                    warn!("Skipping large file {}", key);
-                    return Ok(());
+                if let Some(size) = self.config.max_file_size.as_ref() {
+                    if new_node.size() > *size {
+                        warn!("Skipping large file {}", key);
+                        return Ok(());
+                    }
                 }
 
                 match node {

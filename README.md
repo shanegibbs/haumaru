@@ -5,12 +5,12 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 ## TODO
 
 ### Primary
-* Max file size option
 * Refactor `Storage.send` to `Storage.send(Read, &[u8])`
 * S3 upload (hashes and backup_set records)
 * Use transactions for updates
 
 ### Secondary
+* Add tests for cli/config.yml interface
 * Handle sym/hard links
 * Colapse backup sets
 * Look into refactoring `Node` such that `validate()` is redundant
@@ -20,6 +20,7 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 * Remove un-indexed hashes from store.
 
 ## Done
+* ~~Max file size option~~
 * ~~Config file~~
 * ~~Restore and list to a specific timestamp~~
 * ~~List~~
