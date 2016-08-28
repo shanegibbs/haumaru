@@ -10,6 +10,7 @@ use std::fs::{create_dir_all, rename};
 use rustc_serialize::hex::ToHex;
 
 use {EngineConfig, Node, Storage};
+use storage::{hash_dir, hash_path};
 
 #[derive(Debug)]
 pub enum LocalStorageError {
@@ -55,20 +56,6 @@ impl LocalStorage {
         }
         Ok(LocalStorage { target: storage_path.to_str().unwrap().to_string() })
     }
-}
-
-fn hash_dir(hash: &String) -> PathBuf {
-    let mut path = PathBuf::new();
-    path.push(hash[0..2].to_string());
-    path.push(hash[2..4].to_string());
-    path
-}
-
-fn hash_path(hash: &String) -> PathBuf {
-    let mut path = PathBuf::new();
-    path.push(hash_dir(hash));
-    path.push(hash[4..].to_string());
-    path
 }
 
 impl Storage for LocalStorage {

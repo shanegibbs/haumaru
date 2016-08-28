@@ -1,4 +1,4 @@
-#![deny(warnings)]
+// #![deny(warnings)]
 #![feature(question_mark, box_syntax, try_from, custom_derive, plugin)]
 #![plugin(serde_macros)]
 #[macro_use]
@@ -11,6 +11,7 @@ extern crate rustc_serialize;
 extern crate regex;
 extern crate serde;
 extern crate serde_yaml;
+extern crate rusoto;
 
 #[cfg(test)]
 extern crate env_logger;
@@ -28,6 +29,7 @@ pub use config::{Config, AsConfig};
 pub use engine::EngineConfig;
 pub use node::{Node, NodeKind};
 
+use std::convert::TryInto;
 use std::error::Error;
 use std::path::PathBuf;
 use std::collections::HashSet;
@@ -202,7 +204,8 @@ fn test_split_key() {
 
 }
 
-pub fn run(config: EngineConfig) -> Result<(), HaumaruError> {
+pub fn run(user_config: Config) -> Result<(), HaumaruError> {
+    let config: EngineConfig = user_config.try_into()?;
 
     let mut pathb = PathBuf::new();
     pathb.push(config.path());
@@ -232,6 +235,7 @@ pub fn run(config: EngineConfig) -> Result<(), HaumaruError> {
 
         let store = LocalStorage::new(&config)
             .map_err(|e| HaumaruError::Storage(box e))?;
+        let store = storage::S3Storage::new();
 
         let mut excludes = HashSet::new();
         excludes.insert(working_abs);
@@ -263,7 +267,9 @@ fn setup_and_run<F>(config: EngineConfig, mut f: F) -> Result<(), HaumaruError>
     f(&mut engine)
 }
 
-pub fn verify(config: EngineConfig) -> Result<(), HaumaruError> {
+pub fn verify(user_config: Config) -> Result<(), HaumaruError> {
+    let config: EngineConfig = user_config.try_into()?;
+    let config = config.detached();
 
     let conn = SqlLightIndex::open_database(&config).map_err(|e| HaumaruError::Index(box e))?;
     let mut index = SqlLightIndex::new(&conn)
@@ -282,15 +288,19 @@ pub fn verify(config: EngineConfig) -> Result<(), HaumaruError> {
     Ok(())
 }
 
-pub fn restore(config: EngineConfig, key: &str, target: &str) -> Result<(), HaumaruError> {
+pub fn restore(user_config: Config, key: &str, target: &str) -> Result<(), HaumaruError> {
+    let config: EngineConfig = user_config.try_into()?;
+    let config = config.detached();
     let (key, from) = split_key(key);
     setup_and_run(config,
                   |eng| eng.restore(&key, from, target).map_err(|e| HaumaruError::Engine(e)))
 }
 
-pub fn list(config: EngineConfig, key: &str) -> Result<(), HaumaruError> {
+pub fn list(user_config: Config, key: &str) -> Result<(), HaumaruError> {
     use std::io::Cursor;
 
+    let config: EngineConfig = user_config.try_into()?;
+    let config = config.detached();
     let (key, from) = split_key(key);
 
     let mut cur = Cursor::new(Vec::new());

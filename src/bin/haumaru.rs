@@ -1,5 +1,5 @@
 #![deny(warnings)]
-#![feature(question_mark, try_from)]
+#![feature(question_mark)]
 #[macro_use]
 extern crate log;
 extern crate haumaru;
@@ -150,8 +150,7 @@ fn find_default_config_file() -> (String, String, String) {
 
 fn config_with_args(config: haumaru_api::Config,
                     cmd: &clap::ArgMatches)
-                    -> Result<haumaru_api::EngineConfig, haumaru_api::HaumaruError> {
-    use std::convert::TryInto;
+                    -> Result<haumaru_api::Config, haumaru_api::HaumaruError> {
     let mut config = config;
 
     if config.path().is_none() {
@@ -179,7 +178,7 @@ fn config_with_args(config: haumaru_api::Config,
     }
 
     info!("{:?}", config);
-    Ok(config.try_into()?)
+    Ok(config)
 }
 
 fn run() -> Result<i64, Box<Error>> {
@@ -214,16 +213,16 @@ fn run() -> Result<i64, Box<Error>> {
         haumaru_api::run(config_with_args(user_config, &cmd)?)?;
 
     } else if let Some(cmd) = matches.subcommand_matches("verify") {
-        haumaru_api::verify(config_with_args(user_config, &cmd)?.detached())?;
+        haumaru_api::verify(config_with_args(user_config, &cmd)?)?;
 
     } else if let Some(cmd) = matches.subcommand_matches("ls") {
         let key = cmd.value_of("key").ok_or(CliError::Missing("key".to_string()))?;
-        haumaru_api::list(config_with_args(user_config, &cmd)?.detached(), key)?;
+        haumaru_api::list(config_with_args(user_config, &cmd)?, key)?;
 
     } else if let Some(cmd) = matches.subcommand_matches("restore") {
         let key = cmd.value_of("key").ok_or(CliError::Missing("key".to_string()))?;
         let target = cmd.value_of("target").ok_or(CliError::Missing("target".to_string()))?;
-        haumaru_api::restore(config_with_args(user_config, &cmd)?.detached(), key, target)?;
+        haumaru_api::restore(config_with_args(user_config, &cmd)?, key, target)?;
 
     } else {
         app(default_path.as_str(),

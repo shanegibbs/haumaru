@@ -12,6 +12,7 @@ pub struct Config {
     working: Option<String>,
     period: Option<String>,
     max_file_size: Option<String>,
+    s3: Option<bool>,
 }
 
 impl Config {
