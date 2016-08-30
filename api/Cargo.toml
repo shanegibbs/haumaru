@@ -8,6 +8,7 @@ log = "*"
 notify = "*"
 rusqlite = "0.7.3"
 time = "*"
+chrono = "0.2"
 rust-crypto = "*"
 rustc-serialize = "*"
 env_logger = "*"
@@ -15,7 +16,4 @@ regex = "*"
 serde = "^0.7"
 serde_macros = "^0.7"
 serde_yaml = "^0.2"
-rusoto = {version = "*", features = ["s3"]}
-
-#[target.'cfg(apple)'.dependencies]
-#fsevent =  { git = "https://github.com/shanegibbs/fsevent-rust.git" }
+hyper = "0.9"

@@ -5,13 +5,14 @@
 extern crate log;
 extern crate notify;
 extern crate time;
+extern crate chrono;
 extern crate rusqlite;
 extern crate crypto;
 extern crate rustc_serialize;
 extern crate regex;
 extern crate serde;
 extern crate serde_yaml;
-extern crate rusoto;
+extern crate hyper;
 
 #[cfg(test)]
 extern crate env_logger;
