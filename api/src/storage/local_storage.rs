@@ -59,7 +59,12 @@ impl LocalStorage {
 }
 
 impl Storage for LocalStorage {
-    fn send(&self, hash: &[u8], mut ins: Box<Read>) -> Result<(), Box<Error>> {
+    fn send(&self,
+            _md5: &[u8],
+            hash: &[u8],
+            _size: u64,
+            mut ins: Box<Read>)
+            -> Result<(), Box<Error>> {
         // fn send(&self, base: String, mut n: Node) -> Result<Node, Box<Error>> {
 
         let hex = hash.to_hex();
@@ -188,7 +193,7 @@ mod test {
         let cursor = Cursor::new(vec![]);
 
         let storage = LocalStorage::new(&config).expect("new local storage");
-        storage.send(&hash, box cursor).expect("Send stream");
+        storage.send(&[], &hash, 0, box cursor).expect("Send stream");
 
         let mut hash_filename = path.clone();
         hash_filename.push("store");
@@ -222,7 +227,7 @@ mod test {
         let cursor = Cursor::new(content.to_string().into_bytes());
 
         let storage = LocalStorage::new(&config).expect("new local storage");
-        storage.send(&hash, box cursor).expect("Send stream");
+        storage.send(&[], &hash, 0, box cursor).expect("Send stream");
 
         let mut hash_filename = path.clone();
         hash_filename.push("store");

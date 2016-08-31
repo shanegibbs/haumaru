@@ -76,7 +76,7 @@ pub trait Index {
 }
 
 pub trait Storage {
-    fn send(&self, hash: &[u8], Box<Read>) -> Result<(), Box<Error>>;
+    fn send(&self, md5: &[u8], sha256: &[u8], size: u64, Box<Read>) -> Result<(), Box<Error>>;
     fn retrieve(&self, hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>>;
     fn verify(&self, Node) -> Result<Option<Node>, Box<Error>>;
 }

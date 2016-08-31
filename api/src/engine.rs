@@ -358,6 +358,7 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
             _ => (),
         };
 
+        let size = buffer.position();
         buffer.set_position(0);
 
         let mut hasher = Hasher::new();
@@ -368,12 +369,12 @@ impl<'i, I, S> DefaultEngine<'i, I, S>
             _ => (),
         };
 
-        let vec = hasher.result();
-        n.set_hash(vec.clone());
+        let (md5, sha256) = hasher.result();
+        n.set_hash(sha256.clone());
 
         buffer.set_position(0);
         self.storage
-            .send(&vec, box buffer)
+            .send(&md5, &sha256, size, box buffer)
             .map_err(|e| DefaultEngineError::Storage(format!("Failed to send {}:", n.path()), e))?;
 
         Ok(n)
