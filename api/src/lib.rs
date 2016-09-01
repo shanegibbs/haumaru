@@ -3,6 +3,8 @@
 #![plugin(serde_macros)]
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate lazy_static;
 extern crate notify;
 extern crate time;
 extern crate chrono;
@@ -205,6 +207,12 @@ fn test_split_key() {
 
 }
 
+fn build_storage() -> storage::S3Storage {
+    // LocalStorage::new(&config)
+    //     .map_err(|e| HaumaruError::Storage(box e))?;
+    storage::S3Storage::new()
+}
+
 pub fn run(user_config: Config) -> Result<(), HaumaruError> {
     let config: EngineConfig = user_config.try_into()?;
 
@@ -234,14 +242,10 @@ pub fn run(user_config: Config) -> Result<(), HaumaruError> {
         let mut index = SqlLightIndex::new(&conn)
             .map_err(|e| HaumaruError::Index(box e))?;
 
-        let store = LocalStorage::new(&config)
-            .map_err(|e| HaumaruError::Storage(box e))?;
-        let store = storage::S3Storage::new();
-
         let mut excludes = HashSet::new();
         excludes.insert(working_abs);
 
-        let mut engine = DefaultEngine::new(config, excludes, &mut index, store)
+        let mut engine = DefaultEngine::new(config, excludes, &mut index, build_storage())
             .map_err(|e| HaumaruError::Engine(e))?;
         engine.run().map_err(|e| HaumaruError::Engine(e))?;
     }
@@ -256,13 +260,10 @@ fn setup_and_run<F>(config: EngineConfig, mut f: F) -> Result<(), HaumaruError>
     let mut index = SqlLightIndex::new(&conn)
         .map_err(|e| HaumaruError::Index(box e))?;
 
-    let store = LocalStorage::new(&config)
-        .map_err(|e| HaumaruError::Storage(box e))?;
-
     let mut excludes = HashSet::new();
     excludes.insert(config.abs_working().to_str().unwrap().to_string());
 
-    let mut engine = DefaultEngine::new(config, excludes, &mut index, store)
+    let mut engine = DefaultEngine::new(config, excludes, &mut index, build_storage())
         .map_err(|e| HaumaruError::Engine(e))?;
 
     f(&mut engine)
@@ -276,13 +277,10 @@ pub fn verify(user_config: Config) -> Result<(), HaumaruError> {
     let mut index = SqlLightIndex::new(&conn)
         .map_err(|e| HaumaruError::Index(box e))?;
 
-    let store = LocalStorage::new(&config)
-        .map_err(|e| HaumaruError::Storage(box e))?;
-
     let mut excludes = HashSet::new();
     excludes.insert(config.abs_working().to_str().unwrap().to_string());
 
-    let mut engine = DefaultEngine::new(config, excludes, &mut index, store)
+    let mut engine = DefaultEngine::new(config, excludes, &mut index, build_storage())
         .map_err(|e| HaumaruError::Engine(e))?;
     engine.verify_store().map_err(|e| HaumaruError::Engine(e))?;
 

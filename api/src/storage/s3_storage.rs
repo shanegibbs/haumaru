@@ -3,9 +3,6 @@ use std::env;
 use std::error::Error;
 use std::io::{Read, Write};
 
-use rustc_serialize::base64::{CharacterSet, ToBase64, Newline};
-use rustc_serialize::base64;
-use rustc_serialize::hex::ToHex;
 use chrono::*;
 use crypto::hmac::Hmac;
 use crypto::sha2::Sha256;
@@ -14,6 +11,10 @@ use hyper::client::*;
 use hyper::header::Headers;
 use hyper::method::Method;
 use hyper;
+use regex::Regex;
+use rustc_serialize::base64::{CharacterSet, ToBase64, Newline};
+use rustc_serialize::base64;
+use rustc_serialize::hex::ToHex;
 
 use {Node, Storage};
 use hasher::Hasher;
@@ -22,6 +23,7 @@ pub struct S3Storage {
     // region: String,
     bucket: String,
     prefix: String,
+    client: Client,
 }
 
 impl S3Storage {
@@ -29,6 +31,7 @@ impl S3Storage {
         S3Storage {
             bucket: "haumaru-test2".to_string(),
             prefix: "test".to_string(),
+            client: Client::new(),
         }
     }
 }
@@ -205,6 +208,56 @@ fn test_put_signature() {
     assert_eq!(headers, calcd_headers);
 }
 
+impl S3Storage {
+    fn key_exists(&self, dt: DateTime<UTC>, key: &str) -> bool {
+        let amzdate = dt.format("%Y%m%dT%H%M%SZ").to_string();
+        let datestamp = dt.format("%Y%m%d").to_string();
+
+        let sig = AwsSignature {
+            access_key: env::var("AWS_ACCESS_KEY_ID").expect("AWS_ACCESS_KEY_ID").to_string(),
+            secret_key: env::var("AWS_SECRET_ACCESS_KEY")
+                .expect("AWS_SECRET_ACCESS_KEY")
+                .to_string(),
+            method: "GET".to_string(),
+            service: "s3".to_string(),
+            host: "haumaru-test2.s3.amazonaws.com".to_string(),
+            region: "us-west-2".to_string(),
+            amzdate: amzdate,
+            datestamp: datestamp,
+            canonical_uri: "/".to_string(),
+            canonical_querystring: format!("list-type=2&prefix={}", key).replace("/", "%2F"),
+            payload_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                .to_string(),
+            headers: HashMap::new(),
+        };
+        let headers = sig.signed_headers();
+
+        let request_url = format!("https://{}?{}", sig.host, sig.canonical_querystring);
+
+        let mut res = self.client.get(&request_url).headers(headers).send().unwrap();
+        debug!("{:?}", res);
+        let mut response_body = String::new();
+        res.read_to_string(&mut response_body).expect("read_to_string");
+        debug!("List Result:\n{:?}", response_body);
+
+        assert_eq!(hyper::Ok, res.status);
+
+        lazy_static! {
+            static ref RE: Regex = Regex::new(".*<KeyCount>([\\d]+)</KeyCount>.*").unwrap();
+        }
+        let caps = RE.captures(&response_body).unwrap();
+        if let Some(n) = caps.at(1) {
+            n == "1"
+        } else {
+            false
+        }
+    }
+
+    fn key_from_sha256(&self, hash: &str) -> String {
+        format!("{}/{}/{}/{}", self.prefix, &hash[0..1], &hash[1..2], &hash)
+    }
+}
+
 impl Storage for S3Storage {
     fn send(&self,
             md5: &[u8],
@@ -213,11 +266,13 @@ impl Storage for S3Storage {
             mut ins: Box<Read>)
             -> Result<(), Box<Error>> {
         let hex = hash.to_hex();
-        let key = format!("{}/{}/{}/{}", self.prefix, &hex[0..1], &hex[1..2], hex);
+        let key = self.key_from_sha256(&hex);
 
         debug!("Using s3://{}/{}", self.bucket, key);
 
         let client = Client::new();
+
+        self.key_exists(UTC::now(), &key);
 
         {
             let dt: DateTime<UTC> = UTC::now();
@@ -236,7 +291,7 @@ impl Storage for S3Storage {
                 amzdate: amzdate,
                 datestamp: datestamp,
                 canonical_uri: "/".to_string(),
-                canonical_querystring: "list-type=2".to_string(),
+                canonical_querystring: format!("list-type=2&prefix={}", key).replace("/", "%2F"),
                 payload_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     .to_string(),
                 headers: HashMap::new(),
@@ -246,14 +301,12 @@ impl Storage for S3Storage {
             let request_url = format!("https://{}?{}", sig.host, sig.canonical_querystring);
 
             let mut res = client.get(&request_url).headers(headers).send().unwrap();
-
-            // info!("{:?}", res);
-            assert_eq!(hyper::Ok, res.status);
+            debug!("{:?}", res);
             let mut response_body = String::new();
             res.read_to_string(&mut response_body).expect("read_to_string");
             debug!("List Result:\n{:?}", response_body);
 
-            assert_eq!(res.status, hyper::Ok);
+            assert_eq!(hyper::Ok, res.status);
         }
 
         info!("Uploading s3://{}/{}", self.bucket, key);
@@ -314,7 +367,14 @@ impl Storage for S3Storage {
         Ok(Some(box Cursor::new(vec![])))
     }
     fn verify(&self, n: Node) -> Result<Option<Node>, Box<Error>> {
-        Ok(Some(n))
+        let hex = n.hash().as_ref().expect("hash").to_hex();
+        let key = self.key_from_sha256(&hex);
+        if self.key_exists(UTC::now(), &key) {
+            info!("{} OK", key);
+            Ok(None)
+        } else {
+            Ok(Some(n))
+        }
     }
 }
 

@@ -115,7 +115,7 @@ static GET_ALL_HASHABLE_QUERY_SQL: &'static str = "
     INNER JOIN path
     ON path.id = node.path_id
     WHERE node.hash is not null
-    ORDER BY node.id DESC";
+    ORDER BY node.hash ASC";
 
 static GET_LATEST_QUERY_SQL: &'static str = "
     SELECT *

@@ -628,7 +628,7 @@ impl<'i, I, S> Engine for DefaultEngine<'i, I, S>
         self.index
             .visit_all_hashable(&mut |node| {
                 if let Some(node) = storage.verify(node)? {
-                    debug!("Verification failed for {:?}", node);
+                    error!("Verification failed for {}", node.hash_string());
                     failed.push(node);
                 }
                 Ok(())
