@@ -37,3 +37,14 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 ```
 haumaru ls -w target/work -k myproject@$(date -u -v-8d +'%s')
 ```
+
+## Engine
+
+Single thread IO read.
+Multi thread hashing
+Callback on complete/error
+
+#- Need sending state?
+- Trait for parallel sends. On/off and num.
+
+How do we know when all queues are drained?

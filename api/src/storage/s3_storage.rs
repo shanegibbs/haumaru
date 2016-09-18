@@ -17,13 +17,25 @@ use rustc_serialize::base64;
 use rustc_serialize::hex::ToHex;
 
 use {Node, Storage};
+use storage::SendRequest;
 use hasher::Hasher;
+use retry::retry_forever;
 
 pub struct S3Storage {
     // region: String,
     bucket: String,
     prefix: String,
     client: Client,
+}
+
+impl Clone for S3Storage {
+    fn clone(&self) -> Self {
+        S3Storage {
+            bucket: self.bucket.clone(),
+            prefix: self.prefix.clone(),
+            client: Client::new(),
+        }
+    }
 }
 
 impl S3Storage {
@@ -234,7 +246,15 @@ impl S3Storage {
 
         let request_url = format!("https://{}?{}", sig.host, sig.canonical_querystring);
 
-        let mut res = self.client.get(&request_url).headers(headers).send().unwrap();
+        let mut res = retry_forever(move || {
+            let result = self.client.get(&request_url).headers(headers.clone()).send();
+            if let Err(e) = result {
+                error!("Upload failed: {} - {:?}", e, e);
+                return Err(e);
+            }
+            result
+        });
+
         debug!("{:?}", res);
         let mut response_body = String::new();
         res.read_to_string(&mut response_body).expect("read_to_string");
@@ -259,12 +279,8 @@ impl S3Storage {
 }
 
 impl Storage for S3Storage {
-    fn send(&self,
-            md5: &[u8],
-            hash: &[u8],
-            size: u64,
-            mut ins: Box<Read>)
-            -> Result<(), Box<Error>> {
+    fn send(&self, req: SendRequest) -> Result<Node, Box<Error>> {
+        let SendRequest { md5: md5, sha256: hash, node: node, reader: mut ins, size: size } = req;
         let hex = hash.to_hex();
         let key = self.key_from_sha256(&hex);
 
@@ -309,7 +325,7 @@ impl Storage for S3Storage {
             assert_eq!(hyper::Ok, res.status);
         }
 
-        info!("Uploading s3://{}/{}", self.bucket, key);
+        debug!("Uploading s3://{}/{}", self.bucket, key);
 
         {
             let mut headers = HashMap::new();
@@ -342,7 +358,7 @@ impl Storage for S3Storage {
                 payload_hash: hash.to_hex(),
                 headers: headers,
             };
-            let mut headers = sig.signed_headers();
+            let headers = sig.signed_headers();
 
             let request_url = format!("https://{}/{}", sig.host, key);
 
@@ -360,7 +376,7 @@ impl Storage for S3Storage {
 
             assert_eq!(res.status, hyper::Ok);
         }
-        Ok(())
+        Ok(node)
     }
     fn retrieve(&self, _hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>> {
         use std::io::Cursor;

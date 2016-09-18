@@ -11,13 +11,15 @@
 use std::error::Error;
 use std::fmt;
 use time::Timespec;
-use rusqlite::{Connection, Statement, Row};
+use rusqlite::{Connection, Statement, CachedStatement, Row};
 use rusqlite::Error as SqlError;
 use rusqlite::types::Value;
 use std::path::Path;
 use std::convert::{TryFrom, TryInto};
+use std::sync::{Arc, Mutex};
 
 use {EngineConfig, Node, NodeKind, Index, Record};
+use index::IndexError;
 
 #[derive(Debug)]
 pub enum SqlLightIndexError {
@@ -179,20 +181,17 @@ static DUMP_NODES_QUERY_SQL: &'static str = "
     ON path.id = node.path_id
     ORDER BY path.path, node.id ASC";
 
-pub struct SqlLightIndex<'a> {
-    conn: &'a Connection,
-    insert_path: Statement<'a>,
-    select_path: Statement<'a>,
-    insert_node: Statement<'a>,
-    get_all_hashable: Statement<'a>,
-    get_latest: Statement<'a>,
-    get_from: Statement<'a>,
-    list_latest: Statement<'a>,
-    list_from: Statement<'a>,
-    insert_backup_set: Statement<'a>,
+pub struct SqlLightIndex {
+    conn: Arc<Mutex<Connection>>,
 }
 
-impl<'a> SqlLightIndex<'a> {
+impl Clone for SqlLightIndex {
+    fn clone(&self) -> Self {
+        SqlLightIndex { conn: self.conn.clone() }
+    }
+}
+
+impl SqlLightIndex {
     pub fn open_database(config: &EngineConfig) -> Result<Connection, SqlLightIndexError> {
         let mut db_path = config.abs_working();
         db_path.push("haumaru.idx");
@@ -202,7 +201,7 @@ impl<'a> SqlLightIndex<'a> {
                 SqlLightIndexError::Connect(format!("Failed to open database {:?}", db_path), e)
             })?)
     }
-    pub fn new(conn: &'a Connection) -> Result<Self, SqlLightIndexError> {
+    pub fn new(conn: Connection) -> Result<Self, SqlLightIndexError> {
 
         conn.execute(CREATE_TABLE_BACKUP_SET_SQL, &[])
             .map_err(|e| SqlLightIndexError::CreateTable("backup_set".to_string(), e))?;
@@ -210,20 +209,11 @@ impl<'a> SqlLightIndex<'a> {
         conn.execute(CREATE_TABLE_PATH_SQL, &[])
             .map_err(|e| SqlLightIndexError::CreateTable("path".to_string(), e))?;
 
-        let insert_backup_set = try!(conn.prepare(INSERT_BACKUP_SET_SQL)
-            .map_err(|e| SqlLightIndexError::CreateStatement("insert_backup_set".to_string(), e)));
-
         conn.execute(CREATE_INDEX_PATH_SQL, &[])
             .map_err(|e| SqlLightIndexError::CreateTable("path_index".to_string(), e))?;
 
-        let select_path = try!(conn.prepare(SELECT_PATH_SQL)
-            .map_err(|e| SqlLightIndexError::CreateStatement("select_path".to_string(), e)));
-
-        let insert_path = try!(conn.prepare(INSERT_PATH_SQL)
-            .map_err(|e| SqlLightIndexError::CreateStatement("insert_path".to_string(), e)));
-
-        try!(conn.execute(CREATE_TABLE_NODE_SQL, &[])
-            .map_err(|e| SqlLightIndexError::CreateTable("node".to_string(), e)));
+        conn.execute(CREATE_TABLE_NODE_SQL, &[])
+            .map_err(|e| SqlLightIndexError::CreateTable("node".to_string(), e))?;
 
         conn.execute(CREATE_INDEX_NODE_BACKUP_SET_ID_SQL, &[])
             .map_err(|e| SqlLightIndexError::CreateTable("node_backup_set".to_string(), e))?;
@@ -234,62 +224,79 @@ impl<'a> SqlLightIndex<'a> {
         conn.execute(CREATE_INDEX_NODE_PARENT_ID_SQL, &[])
             .map_err(|e| SqlLightIndexError::CreateTable("node_parent".to_string(), e))?;
 
-        let insert_node = try!(conn.prepare(INSERT_NODE_SQL)
-            .map_err(|e| SqlLightIndexError::CreateStatement("insert_node".to_string(), e)));
-
-        let get_all_hashable = conn.prepare(GET_ALL_HASHABLE_QUERY_SQL)
-            .map_err(|e| SqlLightIndexError::CreateStatement("get_all_hashable".to_string(), e))?;
-
-        let get_latest = try!(conn.prepare(GET_LATEST_QUERY_SQL)
-            .map_err(|e| SqlLightIndexError::CreateStatement("get_latest".to_string(), e)));
-
-        let get_from = try!(conn.prepare(GET_FROM_QUERY_SQL)
-            .map_err(|e| SqlLightIndexError::CreateStatement("get_from".to_string(), e)));
-
-        let list_latest = conn.prepare(LIST_LATEST_QUERY_SQL)
-            .map_err(|e| SqlLightIndexError::CreateStatement("last_latest".to_string(), e))?;
-
-        let list_from = conn.prepare(LIST_FROM_QUERY_SQL)
-            .map_err(|e| SqlLightIndexError::CreateStatement("last_from".to_string(), e))?;
-
-        Ok(SqlLightIndex {
-            conn: conn,
-            insert_path: insert_path,
-            select_path: select_path,
-            insert_node: insert_node,
-            get_all_hashable: get_all_hashable,
-            get_latest: get_latest,
-            get_from: get_from,
-            list_latest: list_latest,
-            list_from: list_from,
-            insert_backup_set: insert_backup_set,
-        })
+        Ok(SqlLightIndex { conn: Arc::new(Mutex::new(conn)) })
     }
 
-    fn get_path_id<S>(&mut self, path: S) -> Result<i64, Box<Error>>
+    fn insert_path<'conn>(&self, conn: &'conn Connection) -> CachedStatement<'conn> {
+        conn.prepare_cached(INSERT_PATH_SQL).expect("insert_path query")
+    }
+
+    fn select_path<'conn>(&self, conn: &'conn Connection) -> CachedStatement<'conn> {
+        conn.prepare_cached(SELECT_PATH_SQL).expect("select_path query")
+    }
+
+    fn insert_node<'conn>(&self, conn: &'conn Connection) -> CachedStatement<'conn> {
+        conn.prepare_cached(INSERT_NODE_SQL).expect("insert_node query")
+    }
+
+    fn get_all_hashable<'conn>(&self, conn: &'conn Connection) -> CachedStatement<'conn> {
+        conn.prepare_cached(GET_ALL_HASHABLE_QUERY_SQL).expect("get_all_hashable query")
+    }
+
+    fn get_latest<'conn>(&self, conn: &'conn Connection) -> CachedStatement<'conn> {
+        conn.prepare_cached(GET_LATEST_QUERY_SQL).expect("get_latest query")
+    }
+
+    fn get_from<'conn>(&self, conn: &'conn Connection) -> CachedStatement<'conn> {
+        conn.prepare_cached(GET_FROM_QUERY_SQL).expect("get_from query")
+    }
+
+    fn list_latest<'conn>(&self, conn: &'conn Connection) -> CachedStatement<'conn> {
+        conn.prepare_cached(LIST_LATEST_QUERY_SQL).expect("list_latest query")
+    }
+
+    fn list_from<'conn>(&self, conn: &'conn Connection) -> CachedStatement<'conn> {
+        conn.prepare_cached(LIST_FROM_QUERY_SQL).expect("list_from query")
+    }
+
+    fn insert_backup_set<'conn>(&self, conn: &'conn Connection) -> CachedStatement<'conn> {
+        conn.prepare_cached(INSERT_BACKUP_SET_SQL).expect("insert_backup_set query")
+    }
+
+    fn get_path_id<S>(&mut self, path: S) -> Result<i64, IndexError>
         where S: Into<String>
     {
+        let conn = self.conn.lock().expect("conn lock");
         let path = path.into();
-        let mut rows = try!(self.select_path.query(&[&path]));
-        while let Some(result_row) = rows.next() {
-            let result_row = try!(result_row);
-            match result_row.get_checked(0) {
-                Ok(Value::Integer(i)) => return Ok(i),
-                Ok(n) => {
-                    return SqlLightIndexError::other(format!("Wrong type: {:?}", n));
-                }
-                Err(e) => {
-                    error!("Unable to get ID: {}", e);
-                    return Err(Box::new(e));
+        {
+            let mut select_path = self.select_path(&conn);
+            let mut rows = select_path.query(&[&path])
+                .map_err(|e| IndexError::Fatal(format!("Select path failed: {}", e), None))?;
+            while let Some(result_row) = rows.next() {
+                let result_row = result_row.map_err(|e| {
+                        IndexError::Fatal(format!("Failed to get result row: {}", e), None)
+                    })?;
+                match result_row.get_checked(0) {
+                    Ok(Value::Integer(i)) => return Ok(i),
+                    Ok(n) => {
+                        return Err(IndexError::Fatal(format!("Wrong type: {:?}", n), None));
+                    }
+                    Err(e) => {
+                        return Err(IndexError::Fatal(format!("Unable to get path ID: {}", e),
+                                                     None));
+                    }
                 }
             }
         }
 
-        Ok(try!(self.insert_path.insert(&[&path])))
+        let mut stmt = self.insert_path(&conn);
+        Ok(stmt.insert(&[&path])
+            .map_err(|e| IndexError::Fatal(format!("Insert query failed: {}", e), None))?)
     }
 
     pub fn dump_records(&self) {
-        let mut stmt = self.conn.prepare(DUMP_NODES_QUERY_SQL).unwrap();
+        let conn = self.conn.lock().expect("conn lock");
+        let mut stmt = conn.prepare(DUMP_NODES_QUERY_SQL).unwrap();
         let mut rows = stmt.query(&[]).unwrap();
 
         while let Some(row) = rows.next() {
@@ -315,30 +322,33 @@ impl<'a> SqlLightIndex<'a> {
     }
 }
 
-impl<'a> Index for SqlLightIndex<'a> {
+impl Index for SqlLightIndex {
     fn visit_all_hashable(&mut self,
-                          f: &mut FnMut(Node) -> Result<(), Box<Error>>)
-                          -> Result<(), Box<Error>> {
+                          f: &mut FnMut(Node) -> Result<(), IndexError>)
+                          -> Result<(), IndexError> {
         trace!("Listing all hashable");
 
-        let mut rows = self.get_all_hashable
-            .query(&[])
-            .map_err(|e| {
-                SqlLightIndexError::FailedStatement(format!("list_all_hashable failed"), e)
-            })?;
+        let conn = self.conn.lock().expect("conn lock");
+        let mut get_all_hashable = self.get_all_hashable(&conn);
+        let mut rows = get_all_hashable.query(&[])
+            .map_err(|e| IndexError::Fatal(format!("list_all_hashable failed: {}", e), None))?;
 
         while let Some(row) = rows.next() {
-            let row = row?;
+            let row =
+                row.map_err(|e| IndexError::Fatal(format!("Failed to get next row: {}", e), None))?;
             f(row.try_into()?)?;
         }
 
         Ok(())
     }
 
-    fn get(&mut self, path: String, from: Option<Timespec>) -> Result<Option<Node>, Box<Error>> {
+    fn get(&mut self, path: String, from: Option<Timespec>) -> Result<Option<Node>, IndexError> {
+        let conn = self.conn.lock().expect("conn lock");
+        let mut get_latest = self.get_latest(&conn);
+        let mut get_from = self.get_from(&conn);
         let mut rows = match from {
-            None => self.get_latest.query(&[&path]).expect("get_latest_query"),
-            Some(t) => self.get_from.query(&[&path, &t.sec]).expect("get_from_query"),
+            None => get_latest.query(&[&path]).expect("get_latest_query"),
+            Some(t) => get_from.query(&[&path, &t.sec]).expect("get_from_query"),
         };
         let row = rows.next();
         if row.is_none() {
@@ -351,7 +361,7 @@ impl<'a> Index for SqlLightIndex<'a> {
         Ok(Some(node))
     }
 
-    fn insert(&mut self, node: Node) -> Result<Node, Box<Error>> {
+    fn insert(&mut self, node: Node) -> Result<Node, IndexError> {
         debug!("Inserting {:?}", node);
         node.validate();
         // path_id, kind, mtime, size, mode, deleted, hash
@@ -359,22 +369,22 @@ impl<'a> Index for SqlLightIndex<'a> {
         if node.is_file() {
             let ref node = node;
             if !node.has_hash() && !node.deleted() {
-                let msg = "File node missing hash".into();
+                let msg = "File node missing hash";
                 let node = Some(node.clone());
-                return Err(box SqlLightIndexError::IllegalArgument(msg, node));
+                return Err(IndexError::Fatal(format!("{}: {:?}", msg, node), None));
             }
             if node.deleted() {
                 if node.has_hash() {
-                    let msg = "Deleted file can not have hash".into();
+                    let msg = "Deleted file can not have hash";
                     let node = Some(node.clone());
-                    return Err(box SqlLightIndexError::IllegalArgument(msg, node));
+                    return Err(IndexError::Fatal(format!("{}: {:?}", msg, node), None));
                 }
             } else {
                 if let Some(ref v) = *node.hash() {
                     if v.is_empty() {
-                        let msg = "File node hash is empty".into();
+                        let msg = "File node hash is empty";
                         let node = Some(node.clone());
-                        return Err(box SqlLightIndexError::IllegalArgument(msg, node));
+                        return Err(IndexError::Fatal(format!("{}: {:?}", msg, node), None));
                     }
                 }
             }
@@ -385,9 +395,10 @@ impl<'a> Index for SqlLightIndex<'a> {
             let parent_path = match path.parent() {
                 Some(p) => p,
                 None => {
-                    let msg = "Unable to get parent path".into();
+                    let msg = "Unable to get parent path";
                     let node = Some(node.clone());
-                    return Err(box SqlLightIndexError::IllegalArgument(msg, node));
+                    return Err(IndexError::Fatal(format!("Unable to get parent path: {:?}", node),
+                                                 None));
                 }
             };
             let parent_path_str = parent_path.to_str().unwrap();
@@ -414,7 +425,8 @@ impl<'a> Index for SqlLightIndex<'a> {
 
             let backup_set_id = node.backup_set().expect("node backup_set") as i64;
 
-            self.insert_node
+            let conn = self.conn.lock().expect("conn lock");
+            self.insert_node(&conn)
                 .execute(&[&backup_set_id,
                            &parent_id,
                            &id,
@@ -424,21 +436,25 @@ impl<'a> Index for SqlLightIndex<'a> {
                            &mode,
                            &node.deleted(),
                            node.hash()])
-                .map_err(|e| {
-                    SqlLightIndexError::FailedNodeStatement(format!("Insert"), node.clone(), e)
-                })?;
+                .map_err(|e| IndexError::Fatal(format!("Insert node query failed: {}", e), None))?;
         }
         Ok(node)
     }
 
-    fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, Box<Error>> {
-        Ok(self.insert_backup_set.insert(&[&timestamp])? as u64)
+    fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, IndexError> {
+        let conn = self.conn.lock().expect("conn lock");
+        let mut stmt = self.insert_backup_set(&conn);
+        Ok(stmt.insert(&[&timestamp])
+            .map_err(|e| {
+                IndexError::Fatal(format!("Failed to create backup set: {}", e), None)
+            })? as u64)
     }
 
     fn dump(&self) -> Vec<Record> {
         let mut vec = vec![];
+        let conn = self.conn.lock().expect("conn lock");
 
-        let mut stmt = self.conn.prepare(DUMP_NODES_QUERY_SQL).unwrap();
+        let mut stmt = conn.prepare(DUMP_NODES_QUERY_SQL).unwrap();
         let mut rows = stmt.query(&[]).unwrap();
 
         while let Some(row) = rows.next() {
@@ -466,16 +482,22 @@ impl<'a> Index for SqlLightIndex<'a> {
         vec
     }
 
-    fn list(&mut self, path: String, from: Option<Timespec>) -> Result<Vec<Node>, Box<Error>> {
+    fn list(&mut self, path: String, from: Option<Timespec>) -> Result<Vec<Node>, IndexError> {
         trace!("Listing path {}", path);
+        let conn = self.conn.lock().expect("conn lock");
 
+        let mut query;
         let mut rows = match from {
-                None => self.list_latest.query(&[&path]),
-                Some(t) => self.list_from.query(&[&path, &t.sec]),
+                None => {
+                    query = self.list_latest(&conn);
+                    query.query(&[&path])
+                }
+                Some(t) => {
+                    query = self.list_from(&conn);
+                    query.query(&[&path, &t.sec])
+                }
             }
-            .map_err(|e| {
-                SqlLightIndexError::FailedStatement(format!("list failed for {}", path), e)
-            })?;
+            .map_err(|e| IndexError::Fatal(format!("list failed for {}: {}", path, e), None))?;
 
         let mut v = vec![];
         while let Some(row_result) = rows.next() {
@@ -490,7 +512,7 @@ impl<'a> Index for SqlLightIndex<'a> {
 }
 
 impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
-    type Err = Box<Error>;
+    type Err = IndexError;
 
     fn try_from(row: Row<'a, 'stmt>) -> Result<Self, Self::Err> {
         let path_str: String = row.get("path");
@@ -498,11 +520,11 @@ impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
         let mtime: i64 = match row.get_checked("mtime") {
             Ok(Value::Integer(i)) => i,
             Ok(n) => {
-                return SqlLightIndexError::other(format!("Wrong type for mtime: {:?}", n));
+                return Err(IndexError::Fatal(format!("Wrong type for mtime: {:?}", n), None));
             }
             Err(e) => {
                 error!("Unable to get mtime: {}", e);
-                return Err(Box::new(e));
+                return Err(IndexError::Fatal(format!("Unable to get mtime: {}", e), None));
             }
         };
 
@@ -516,7 +538,7 @@ impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
         let mut node = match kind_char.as_ref() {
                 "F" => Node::new_file(path_str, Timespec::new(mtime, 0), size, mode),
                 "D" => Node::new_dir(path_str, Timespec::new(mtime, 0), mode),
-                k => return SqlLightIndexError::other(format!("Unknown kind: {}", k)),
+                k => return Err(IndexError::Fatal(format!("Unknown kind: {}", k), None)),
             }
             .with_backup_set(backup_set_id);
 
@@ -525,13 +547,16 @@ impl<'a, 'stmt> TryFrom<Row<'a, 'stmt>> for Node {
             node.set_deleted(true);
         }
 
-        match row.get_checked("hash")? {
+        match row.get_checked("hash")
+            .map_err(|e| IndexError::Fatal(format!("Unable to get hash from row: {}", e), None))? {
             Value::Blob(b) => {
                 trace!("Setting hash");
                 node = node.with_hash(b)
             }
             Value::Null => trace!("Hash is Null"),
-            v => return SqlLightIndexError::other(format!("node.hash is not blob type: {:?}", v)),
+            v => {
+                return Err(IndexError::Fatal(format!("node.hash is not blob type: {:?}", v), None))
+            }
         }
 
         trace!("Building {:?}", node);

@@ -15,6 +15,7 @@ extern crate regex;
 extern crate serde;
 extern crate serde_yaml;
 extern crate hyper;
+extern crate threadpool;
 
 #[cfg(test)]
 extern crate env_logger;
@@ -27,6 +28,8 @@ pub mod config;
 
 mod node;
 mod hasher;
+mod retry;
+mod queue;
 
 pub use config::{Config, AsConfig};
 pub use engine::EngineConfig;
@@ -46,8 +49,11 @@ use time::Timespec;
 
 use engine::DefaultEngine;
 use filesystem::Change;
+use index::IndexError;
 use index::SqlLightIndex;
-use storage::LocalStorage;
+use index::SingleThreadIndex;
+// use storage::LocalStorage;
+use storage::SendRequest;
 
 pub trait Engine {
     fn run(&mut self) -> Result<u64, Box<Error>>;
@@ -65,20 +71,20 @@ pub trait Engine {
             -> Result<(), Box<Error>>;
 }
 
-pub trait Index {
-    fn get(&mut self, path: String, from: Option<Timespec>) -> Result<Option<Node>, Box<Error>>;
-    fn list(&mut self, path: String, from: Option<Timespec>) -> Result<Vec<Node>, Box<Error>>;
+pub trait Index: Send + Clone {
+    fn get(&mut self, path: String, from: Option<Timespec>) -> Result<Option<Node>, IndexError>;
+    fn list(&mut self, path: String, from: Option<Timespec>) -> Result<Vec<Node>, IndexError>;
     fn visit_all_hashable(&mut self,
-                          f: &mut FnMut(Node) -> Result<(), Box<Error>>)
-                          -> Result<(), Box<Error>>;
-    fn insert(&mut self, Node) -> Result<Node, Box<Error>>;
-    fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, Box<Error>>;
+                          f: &mut FnMut(Node) -> Result<(), IndexError>)
+                          -> Result<(), IndexError>;
+    fn insert(&mut self, Node) -> Result<Node, IndexError>;
+    fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, IndexError>;
 
     fn dump(&self) -> Vec<Record>;
 }
 
-pub trait Storage {
-    fn send(&self, md5: &[u8], sha256: &[u8], size: u64, Box<Read>) -> Result<(), Box<Error>>;
+pub trait Storage: Send + Clone {
+    fn send(&self, req: SendRequest) -> Result<Node, Box<Error>>;
     fn retrieve(&self, hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>>;
     fn verify(&self, Node) -> Result<Option<Node>, Box<Error>>;
 }
@@ -239,13 +245,14 @@ pub fn run(user_config: Config) -> Result<(), HaumaruError> {
     create_dir_all(&store_path).unwrap();
 
     {
-        let mut index = SqlLightIndex::new(&conn)
+        let index = SqlLightIndex::new(conn)
             .map_err(|e| HaumaruError::Index(box e))?;
+        // let index = SingleThreadIndex::new(index);
 
         let mut excludes = HashSet::new();
         excludes.insert(working_abs);
 
-        let mut engine = DefaultEngine::new(config, excludes, &mut index, build_storage())
+        let mut engine = DefaultEngine::new(config, excludes, index, build_storage())
             .map_err(|e| HaumaruError::Engine(e))?;
         engine.run().map_err(|e| HaumaruError::Engine(e))?;
     }
@@ -257,13 +264,14 @@ fn setup_and_run<F>(config: EngineConfig, mut f: F) -> Result<(), HaumaruError>
     where F: FnMut(&mut Engine) -> Result<(), HaumaruError>
 {
     let conn = SqlLightIndex::open_database(&config).map_err(|e| HaumaruError::Index(box e))?;
-    let mut index = SqlLightIndex::new(&conn)
+    let index = SqlLightIndex::new(conn)
         .map_err(|e| HaumaruError::Index(box e))?;
+    // let index = SingleThreadIndex::new(index);
 
     let mut excludes = HashSet::new();
     excludes.insert(config.abs_working().to_str().unwrap().to_string());
 
-    let mut engine = DefaultEngine::new(config, excludes, &mut index, build_storage())
+    let mut engine = DefaultEngine::new(config, excludes, index, build_storage())
         .map_err(|e| HaumaruError::Engine(e))?;
 
     f(&mut engine)
@@ -274,13 +282,15 @@ pub fn verify(user_config: Config) -> Result<(), HaumaruError> {
     let config = config.detached();
 
     let conn = SqlLightIndex::open_database(&config).map_err(|e| HaumaruError::Index(box e))?;
-    let mut index = SqlLightIndex::new(&conn)
-        .map_err(|e| HaumaruError::Index(box e))?;
+    // let index = SingleThreadIndex::new({
+    //     SqlLightIndex::new(&conn).map_err(|e| HaumaruError::Index(box e))?
+    // });
+    let index = SqlLightIndex::new(conn).map_err(|e| HaumaruError::Index(box e))?;
 
     let mut excludes = HashSet::new();
     excludes.insert(config.abs_working().to_str().unwrap().to_string());
 
-    let mut engine = DefaultEngine::new(config, excludes, &mut index, build_storage())
+    let mut engine = DefaultEngine::new(config, excludes, index, build_storage())
         .map_err(|e| HaumaruError::Engine(e))?;
     engine.verify_store().map_err(|e| HaumaruError::Engine(e))?;
 
@@ -318,7 +328,7 @@ pub fn dump() -> Result<(), HaumaruError> {
     db_path.push("haumaru.idx");
 
     let conn = Connection::open_with_flags(&db_path, rusqlite::SQLITE_OPEN_READ_ONLY).unwrap();
-    let index = SqlLightIndex::new(&conn)
+    let index = SqlLightIndex::new(conn)
         .map_err(|e| HaumaruError::Index(box e))?;
 
     index.dump_records();

@@ -10,7 +10,7 @@ use std::fs::{create_dir_all, rename};
 use rustc_serialize::hex::ToHex;
 
 use {EngineConfig, Node, Storage};
-use storage::{hash_dir, hash_path};
+use storage::{SendRequest, hash_dir, hash_path};
 
 #[derive(Debug)]
 pub enum LocalStorageError {
@@ -31,6 +31,7 @@ impl fmt::Display for LocalStorageError {
     }
 }
 
+#[derive(Clone)]
 pub struct LocalStorage {
     target: String,
 }
@@ -58,14 +59,13 @@ impl LocalStorage {
     }
 }
 
+// _md5: &[u8],
+// hash: &[u8],
+// _size: u64,
+// mut ins: Box<Read>
 impl Storage for LocalStorage {
-    fn send(&self,
-            _md5: &[u8],
-            hash: &[u8],
-            _size: u64,
-            mut ins: Box<Read>)
-            -> Result<(), Box<Error>> {
-        // fn send(&self, base: String, mut n: Node) -> Result<Node, Box<Error>> {
+    fn send(&self, req: SendRequest) -> Result<Node, Box<Error>> {
+        let SendRequest { md5: md5, sha256: hash, node: node, reader: mut ins, size: size } = req;
 
         let hex = hash.to_hex();
 
@@ -75,7 +75,7 @@ impl Storage for LocalStorage {
 
         if hash_filename.exists() {
             debug!("Already have {}", hex);
-            return Ok(());
+            return Ok(node);
         }
 
         debug!("Sending {:?}", hash);
@@ -109,7 +109,7 @@ impl Storage for LocalStorage {
                                                    e))
             })?;
 
-        Ok(())
+        Ok(node)
     }
 
     fn retrieve(&self, hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>> {
