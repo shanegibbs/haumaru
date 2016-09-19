@@ -280,7 +280,7 @@ impl S3Storage {
 
 impl Storage for S3Storage {
     fn send(&self, req: SendRequest) -> Result<Node, Box<Error>> {
-        let SendRequest { md5: md5, sha256: hash, node: node, reader: mut ins, size: size } = req;
+        let SendRequest { md5, sha256: hash, node, reader: mut ins, size } = req;
         let hex = hash.to_hex();
         let key = self.key_from_sha256(&hex);
 

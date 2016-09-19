@@ -1,4 +1,4 @@
-// #![deny(warnings)]
+#![deny(warnings)]
 #![feature(question_mark, box_syntax, try_from, custom_derive, plugin)]
 #![plugin(serde_macros)]
 #[macro_use]
@@ -51,7 +51,6 @@ use engine::DefaultEngine;
 use filesystem::Change;
 use index::IndexError;
 use index::SqlLightIndex;
-use index::SingleThreadIndex;
 // use storage::LocalStorage;
 use storage::SendRequest;
 

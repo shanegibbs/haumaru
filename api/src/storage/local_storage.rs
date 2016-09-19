@@ -65,7 +65,7 @@ impl LocalStorage {
 // mut ins: Box<Read>
 impl Storage for LocalStorage {
     fn send(&self, req: SendRequest) -> Result<Node, Box<Error>> {
-        let SendRequest { md5: md5, sha256: hash, node: node, reader: mut ins, size: size } = req;
+        let SendRequest { md5: _md5, sha256: hash, node, reader: mut ins, size: _size } = req;
 
         let hex = hash.to_hex();
 

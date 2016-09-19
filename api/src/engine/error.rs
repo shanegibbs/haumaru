@@ -3,7 +3,6 @@ use std::fmt::{Formatter, Display};
 use std::fmt::Error as FmtError;
 use std::error::Error as StdError;
 
-use super::Result;
 use filesystem::BackupPathError;
 use Node;
 

@@ -5,6 +5,7 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 ## TODO
 
 ### Primary
+* Thread up full scan
 * S3 upload (hashes and backup_set records)
 * Use transactions for updates
 

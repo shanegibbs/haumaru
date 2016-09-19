@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+#![allow(dead_code)]
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Condvar};
 
@@ -46,6 +46,17 @@ impl<T> Queue<T> {
         debug!("Pushed item. len={}", queue.len());
         self.cvar.notify_all();
     }
+    pub fn try_pop(&mut self) -> Option<QueueItem<T>> {
+        let mut queue = self.q.lock().expect("lock");
+        if let Some(item) = queue.pop_front() {
+            debug!("Popped item. Post pop len={}", queue.len());
+            self.cvar.notify_all();
+            let mut count = self.in_progress.lock().expect("in_progress lock");
+            *count += 1;
+            return Some(QueueItem::new(self, item));
+        }
+        None
+    }
     pub fn pop(&mut self) -> QueueItem<T> {
         let mut queue = self.q.lock().expect("lock");
         while queue.is_empty() {
@@ -58,6 +69,21 @@ impl<T> Queue<T> {
             let mut count = self.in_progress.lock().expect("in_progress lock");
             *count += 1;
             return QueueItem::new(self, item);
+        }
+        unreachable!();
+    }
+    pub fn pop_until_complete(&mut self) -> Option<QueueItem<T>> {
+        let mut queue = self.q.lock().expect("lock");
+        while !queue.is_empty() || self.in_progress() > 0 {
+            debug!("Waiting to pop. len={}", queue.len());
+            queue = self.cvar.wait(queue).expect("cvar");
+        }
+        if let Some(item) = queue.pop_front() {
+            debug!("Popped item. Post pop len={}", queue.len());
+            self.cvar.notify_all();
+            let mut count = self.in_progress.lock().expect("in_progress lock");
+            *count += 1;
+            return Some(QueueItem::new(self, item));
         }
         unreachable!();
     }
@@ -82,7 +108,7 @@ impl<T> Queue<T> {
 
 // QueueItem
 
-struct QueueItem<T> {
+pub struct QueueItem<T> {
     t: Option<T>,
     in_progress: Arc<Mutex<u64>>,
     success: bool,

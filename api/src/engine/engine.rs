@@ -6,23 +6,16 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
 use std::time::Duration;
 use std::fs::create_dir_all;
-use std::io::{Write, Cursor, copy};
-use std::fs::File;
-use std::marker::{Sync, Send};
+use std::io::Write;
 use time;
 use time::{Timespec, at, strftime};
-use rustc_serialize::hex::ToHex;
-use threadpool::ThreadPool;
 use std::error::Error as StdError;
 
 use super::*;
-use {Node, Engine, Index, Storage, get_key};
-use filesystem::{Change, BackupPath, BackupPathError};
-use hasher::Hasher;
-use queue::Queue;
+use {Engine, Index, Storage, get_key};
+use filesystem::Change;
 use index::IndexError;
 
-use std;
 impl<I, S> Engine for DefaultEngine<I, S>
     where I: Index + 'static,
           S: Storage + 'static
@@ -152,7 +145,9 @@ impl<I, S> Engine for DefaultEngine<I, S>
                     None => {
                         info!("{} + {}", queue_stats, key);
                         debug!("Detected NEW on {:?}, {:?}", change, new_node);
-                        self.queue_for_send(new_node.with_backup_set(backup_set));
+                        if let Err(e) = self.queue_for_send(new_node.with_backup_set(backup_set)) {
+                            error!("Failed queuing new {}: {}", key, e);
+                        }
                     }
                     Some(existing_node) => {
 
@@ -174,7 +169,9 @@ impl<I, S> Engine for DefaultEngine<I, S>
                                change,
                                existing_node,
                                new_node);
-                        self.queue_for_send(new_node.with_backup_set(backup_set));
+                        if let Err(e) = self.queue_for_send(new_node.with_backup_set(backup_set)) {
+                            error!("Failed queuing updated {}: {}", key, e);
+                        }
                     }
                 }
             }

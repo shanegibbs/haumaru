@@ -11,7 +11,7 @@
 use std::error::Error;
 use std::fmt;
 use time::Timespec;
-use rusqlite::{Connection, Statement, CachedStatement, Row};
+use rusqlite::{Connection, CachedStatement, Row};
 use rusqlite::Error as SqlError;
 use rusqlite::types::Value;
 use std::path::Path;
@@ -31,12 +31,6 @@ pub enum SqlLightIndexError {
     FailedNodeStatement(String, Node, SqlError),
     NodeParse(String, Box<Error>),
     Other(String),
-}
-
-impl SqlLightIndexError {
-    fn other<T>(s: String) -> Result<T, Box<Error>> {
-        Err(Box::new(SqlLightIndexError::Other(s)))
-    }
 }
 
 impl Error for SqlLightIndexError {
@@ -397,8 +391,7 @@ impl Index for SqlLightIndex {
                 None => {
                     let msg = "Unable to get parent path";
                     let node = Some(node.clone());
-                    return Err(IndexError::Fatal(format!("Unable to get parent path: {:?}", node),
-                                                 None));
+                    return Err(IndexError::Fatal(format!("{}: {:?}", msg, node), None));
                 }
             };
             let parent_path_str = parent_path.to_str().unwrap();

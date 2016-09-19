@@ -1,26 +1,19 @@
 use std::path::PathBuf;
 use std::result::Result as StdResult;
 use std::thread;
-use std::thread::sleep;
-use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
-use std::time::Duration;
 use std::fs::create_dir_all;
 use std::io::{Write, Cursor, copy};
 use std::fs::File;
-use time;
 use time::{Timespec, at, strftime};
 use rustc_serialize::hex::ToHex;
-use threadpool::ThreadPool;
 use std::error::Error as StdError;
-use std::marker::{Sync, Send};
 
 use {Node, Engine, Index, Storage, get_key};
-use filesystem::{Change, BackupPath, BackupPathError};
-use hasher::Hasher;
+use filesystem::{Change, BackupPath};
 use queue::Queue;
 use engine::pre_send::PreSendWorker;
-use storage::{SendRequest, SendRequestReader};
+use storage::SendRequest;
 
 mod config;
 mod pre_send;
@@ -35,8 +28,6 @@ mod engine;
 mod test;
 
 pub type Result<T> = StdResult<T, DefaultEngineError>;
-
-use std;
 
 pub struct DefaultEngine<I, S>
     where I: Index,
@@ -133,7 +124,7 @@ impl<I, S> DefaultEngine<I, S>
                                 sent_queue.push(node);
                                 item.success();
                             }
-                            Err(e) => error!("Failing sending {}", path),
+                            Err(e) => error!("Failing sending {}: {}", path, e),
                         }
                     }
                 });
@@ -150,7 +141,7 @@ impl<I, S> DefaultEngine<I, S>
                         let path = node.path().to_string();
                         match index.insert(node) {
                             Ok(n) => {
-                                debug!("Inserted {}", path);
+                                debug!("Inserted {} - {:?}", path, n);
                                 item.success();
                             }
                             Err(e) => {
@@ -306,71 +297,13 @@ impl<I, S> DefaultEngine<I, S>
         Ok(())
     }
 
-    fn queue_for_send(&mut self, mut n: Node) -> Result<()> {
+    fn queue_for_send(&mut self, n: Node) -> Result<()> {
         Ok(if n.is_file() {
             self.pre_send_queue.push(n);
         } else {
             self.index.insert(n).map_err(|e| DefaultEngineError::Index(box e))?;
             ()
         })
-    }
-
-    fn send(&mut self, mut n: Node) -> Result<()> {
-        use std::io::{Cursor, copy};
-
-        if n.is_file() {
-
-            debug!("Sending {:?}", n);
-
-            let mut path = PathBuf::new();
-            path.push(self.config.path());
-            path.push(n.path());
-
-            let mut buffer = Cursor::new(vec![]);
-
-            let mut src_file = File::open(&path)
-                .map_err(|e| {
-                    DefaultEngineError::Storage(format!("Failed opening {:?}", path), box e)
-                })?;
-
-            match copy(&mut src_file, &mut buffer) {
-                Err(e) => {
-                    return Err(DefaultEngineError::Storage(format!("Failed reading {:?}", path),
-                                                           box e));
-                }
-                _ => (),
-            };
-
-            let size = buffer.position();
-            buffer.set_position(0);
-
-            let mut hasher = Hasher::new();
-            match copy(&mut buffer, &mut hasher) {
-                Err(e) => {
-                    return Err(DefaultEngineError::Storage(format!("Failed to hash {:?}", path),
-                                                           box e));
-                }
-                _ => (),
-            };
-
-            let (md5, sha256) = hasher.result();
-            n.set_hash(sha256.clone());
-
-            buffer.set_position(0);
-            let reader = SendRequestReader::InMemory(buffer);
-            let req = SendRequest::new(md5, sha256, n.clone(), reader, size); // WARN cloning here
-            self.storage
-                .send(req)
-                .map_err(|e| {
-                    DefaultEngineError::Storage(format!("Failed to send {}:",
-                                                        path.to_str().expect("path")),
-                                                e)
-                })?;
-
-        }
-
-        self.index.insert(n).map_err(|e| DefaultEngineError::Index(box e))?;
-        Ok(())
     }
 }
 
