@@ -82,10 +82,7 @@ impl PreSendWorker {
         buffer.set_position(0);
 
         let reader = SendRequestReader::InMemory(buffer);
+        debug!("Processing {} complete", n.path());
         Ok(SendRequest::new(md5, sha256, n, reader, size))
-
-        // self.storage
-        // .send(&md5, &sha256, size, box buffer)
-        // .map_err(|e| DefaultEngineError::Storage(format!("Failed to send {}:", n.path()), e))?;
     }
 }

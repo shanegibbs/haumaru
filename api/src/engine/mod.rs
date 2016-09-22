@@ -30,7 +30,7 @@ mod test;
 pub type Result<T> = StdResult<T, DefaultEngineError>;
 
 pub struct DefaultEngine<I, S>
-    where I: Index,
+    where I: Index + Send + Clone,
           S: Storage
 {
     config: EngineConfig,
@@ -44,7 +44,7 @@ pub struct DefaultEngine<I, S>
 }
 
 impl<I, S> DefaultEngine<I, S>
-    where I: Index + 'static,
+    where I: Index + Send + Clone + 'static,
           S: Storage + 'static
 {
     pub fn new(config: EngineConfig,
@@ -53,6 +53,10 @@ impl<I, S> DefaultEngine<I, S>
                storage: S)
                -> StdResult<Self, Box<StdError>> {
 
+        let pre_send_queue = Queue::new("pre-process").with_max_len(4);
+        let send_queue = Queue::new("send").with_max_len(4);
+        let sent_queue = Queue::new("sent").with_max_len(4);
+
         if config.is_detached() {
             Ok(DefaultEngine {
                 config: config,
@@ -60,9 +64,9 @@ impl<I, S> DefaultEngine<I, S>
                 index: index,
                 storage: storage,
                 backup_path: None,
-                pre_send_queue: Queue::new(),
-                send_queue: Queue::new(),
-                sent_queue: Queue::new(),
+                pre_send_queue: pre_send_queue,
+                send_queue: send_queue,
+                sent_queue: sent_queue,
             })
 
         } else {
@@ -83,10 +87,6 @@ impl<I, S> DefaultEngine<I, S>
 
             let bp = try!(BackupPath::new(abs_path.clone())
                 .map_err(|e| DefaultEngineError::CreateBackupPath(e)));
-
-            let pre_send_queue = Queue::new().with_max_len(4);
-            let send_queue = Queue::new().with_max_len(4);
-            let sent_queue = Queue::new().with_max_len(4);
 
             let de = DefaultEngine {
                 config: config,
@@ -158,6 +158,12 @@ impl<I, S> DefaultEngine<I, S>
 
     pub fn backup_path(&mut self) -> &mut BackupPath {
         self.backup_path.as_mut().expect("some BackupPath")
+    }
+
+    pub fn wait_for_queue_drain(&mut self) {
+        self.pre_send_queue.wait();
+        self.send_queue.wait();
+        self.sent_queue.wait();
     }
 
     pub fn scan(&mut self, backup_set: u64) -> StdResult<(), Box<StdError>> {
@@ -233,6 +239,7 @@ impl<I, S> DefaultEngine<I, S>
 
         }
 
+        self.wait_for_queue_drain();
         info!("Full scan complete");
         Ok(())
     }

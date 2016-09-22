@@ -17,7 +17,7 @@ use filesystem::Change;
 use index::IndexError;
 
 impl<I, S> Engine for DefaultEngine<I, S>
-    where I: Index + 'static,
+    where I: Index + Send + Clone + 'static,
           S: Storage + 'static
 {
     fn run(&mut self) -> StdResult<u64, Box<StdError>> {
@@ -89,6 +89,10 @@ impl<I, S> Engine for DefaultEngine<I, S>
                     self.process_change(backup_set, change).unwrap();
                 }
             }
+
+            self.wait_for_queue_drain();
+
+            info!("Backup run complete");
 
         }
     }

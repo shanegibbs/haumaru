@@ -14,14 +14,13 @@ fn test_list(key: &str, f: &Fn(&mut Index)) -> String {
     let _ = env_logger::init();
 
     let conn = Connection::open_in_memory().expect("conn");
-    let mut index = SqlLightIndex::new(&conn).expect("index");
+    let mut index = SqlLightIndex::new(conn).expect("index");
     let config = EngineConfig::new_detached("target/test/list_file");
     let store = LocalStorage::new(&config).expect("store");
 
     f(&mut index);
 
-    let mut engine = DefaultEngine::new(config, HashSet::new(), &mut index, store)
-        .expect("new engine");
+    let mut engine = DefaultEngine::new(config, HashSet::new(), index, store).expect("new engine");
     let mut cur = Cursor::new(Vec::new());
     engine.list(key, None, &mut cur).expect("list");
     String::from_utf8(cur.into_inner()).expect("from_utf8")

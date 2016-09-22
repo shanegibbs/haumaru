@@ -205,7 +205,6 @@ fn test_put_signature() {
             .to_string(),
         headers: headers,
     };
-    let mut calcd_headers = sig.signed_headers();
 
     let mut headers = Headers::new();
     headers.set_raw("X-Amz-Date", vec![b"20160830T022534Z".to_vec()]);
@@ -249,7 +248,7 @@ impl S3Storage {
         let mut res = retry_forever(move || {
             let result = self.client.get(&request_url).headers(headers.clone()).send();
             if let Err(e) = result {
-                error!("Upload failed: {} - {:?}", e, e);
+                error!("Check S3 key failed: {} - {:?}", e, e);
                 return Err(e);
             }
             result

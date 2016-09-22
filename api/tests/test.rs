@@ -64,8 +64,8 @@ fn test_change<'a, F>(name: &str, f: F) -> Vec<Record>
     setup_logging("off");
 
     // sqlite
-    let conn = Connection::open_in_memory().unwrap();
-    let mut index = SqlLightIndex::new(&conn).unwrap();
+    let conn = Connection::open_in_memory().expect("conn");
+    let index = SqlLightIndex::new(conn).unwrap();
 
     // delete and re-create test path
     let test_dir = format!("target/test/{}", name);
@@ -86,8 +86,9 @@ fn test_change<'a, F>(name: &str, f: F) -> Vec<Record>
     let store = LocalStorage::new(&config).unwrap();
 
     {
-        let mut engine = DefaultEngine::new(config, HashSet::new(), &mut index, store).unwrap();
+        let mut engine = DefaultEngine::new(config, HashSet::new(), index.clone(), store).unwrap();
         f(&mut engine, files_path);
+        engine.wait_for_queue_drain();
     }
 
     index.dump()
@@ -167,6 +168,7 @@ fn process_change_delete_file() {
         debug!("Created {:?}", filename);
 
         engine.process_change(3, Change::new(filename.clone())).unwrap();
+        engine.wait_for_queue_drain();
 
         remove_file(filename.clone()).unwrap();
         debug!("Deleted {:?}", filename);
@@ -194,6 +196,7 @@ fn process_change_skip_dir_update() {
         // TODO
 
         engine.process_change(3, Change::new(subdir.clone())).unwrap();
+        engine.wait_for_queue_drain();
 
         let filename = write_file(subdir.clone(), "a", "abc");
         debug!("Created {:?}", filename);
@@ -217,6 +220,7 @@ fn process_change_file_then_dir() {
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created {:?}", filename);
         engine.process_change(3, Change::new(filename.clone())).unwrap();
+        engine.wait_for_queue_drain();
 
         remove_file(filename.clone()).unwrap();
         debug!("Deleted {:?}", filename);
@@ -242,6 +246,7 @@ fn process_change_dir_then_file() {
         create_dir_all(n.clone()).unwrap();
         debug!("Created Dir {:?}", n);
         engine.process_change(3, Change::new(n.clone())).unwrap();
+        engine.wait_for_queue_drain();
 
         remove_dir(n.clone()).unwrap();
         debug!("Deleted Dir {:?}", n);
@@ -265,14 +270,17 @@ fn process_change_deleted_recreated_file() {
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created File {:?}", filename);
         engine.process_change(3, Change::new(filename.clone())).unwrap();
+        engine.wait_for_queue_drain();
 
         remove_file(filename.clone()).unwrap();
         debug!("Deleted {:?}", filename);
         engine.process_change(4, Change::new(filename.clone())).unwrap();
+        engine.wait_for_queue_drain();
 
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created File {:?}", filename);
         engine.process_change(5, Change::new(filename.clone())).unwrap();
+        engine.wait_for_queue_drain();
 
     });
 

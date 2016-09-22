@@ -49,10 +49,11 @@ use time::Timespec;
 
 use engine::DefaultEngine;
 use filesystem::Change;
-use index::IndexError;
 use index::SqlLightIndex;
 // use storage::LocalStorage;
 use storage::SendRequest;
+
+pub use index::Index;
 
 pub trait Engine {
     fn run(&mut self) -> Result<u64, Box<Error>>;
@@ -68,18 +69,6 @@ pub trait Engine {
             from: Option<Timespec>,
             out: &mut Write)
             -> Result<(), Box<Error>>;
-}
-
-pub trait Index: Send + Clone {
-    fn get(&mut self, path: String, from: Option<Timespec>) -> Result<Option<Node>, IndexError>;
-    fn list(&mut self, path: String, from: Option<Timespec>) -> Result<Vec<Node>, IndexError>;
-    fn visit_all_hashable(&mut self,
-                          f: &mut FnMut(Node) -> Result<(), IndexError>)
-                          -> Result<(), IndexError>;
-    fn insert(&mut self, Node) -> Result<Node, IndexError>;
-    fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, IndexError>;
-
-    fn dump(&self) -> Vec<Record>;
 }
 
 pub trait Storage: Send + Clone {

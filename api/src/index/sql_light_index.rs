@@ -604,12 +604,15 @@ mod test {
     use time::Timespec;
     use {Node, Index, NodeKind};
 
-    #[test]
-    fn insert_file() {
+    fn index() -> SqlLightIndex {
         let _ = env_logger::init();
         let conn = Connection::open_in_memory().unwrap();
-        let mut index = SqlLightIndex::new(&conn).unwrap();
+        SqlLightIndex::new(conn).unwrap()
+    }
 
+    #[test]
+    fn insert_file() {
+        let mut index = index();
         let mtime = Timespec::new(10, 0);
         let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(5);
         n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
@@ -620,10 +623,7 @@ mod test {
 
     #[test]
     fn delete_file() {
-        let _ = env_logger::init();
-        let conn = Connection::open_in_memory().unwrap();
-        let mut index = SqlLightIndex::new(&conn).unwrap();
-
+        let mut index = index();
         let mtime = Timespec::new(10, 0);
         let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(5);
         n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
@@ -639,10 +639,7 @@ mod test {
 
     #[test]
     fn update_node() {
-        let _ = env_logger::init();
-        let conn = Connection::open_in_memory().unwrap();
-        let mut index = SqlLightIndex::new(&conn).unwrap();
-
+        let mut index = index();
         let n = Node::new_file("a", Timespec::new(10, 0), 1024, 500)
             .with_backup_set(5)
             .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
@@ -659,10 +656,7 @@ mod test {
 
     #[test]
     fn get_latest_file() {
-        let _ = env_logger::init();
-        let conn = Connection::open_in_memory().unwrap();
-        let mut index = SqlLightIndex::new(&conn).unwrap();
-
+        let mut index = index();
         let mtime = Timespec::new(10, 0);
         let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(5);
         n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
@@ -682,10 +676,7 @@ mod test {
 
     #[test]
     fn get_file_from() {
-        let _ = env_logger::init();
-        let conn = Connection::open_in_memory().expect("Connection");
-        let mut index = SqlLightIndex::new(&conn).expect("SqliteIndex");
-
+        let mut index = index();
         let bs_a = index.create_backup_set(600).expect("bs_a");
         let bs_b = index.create_backup_set(1200).expect("bs_b");
 
@@ -731,10 +722,7 @@ mod test {
 
     #[test]
     fn list_from() {
-        let _ = env_logger::init();
-        let conn = Connection::open_in_memory().expect("Connection");
-        let mut index = SqlLightIndex::new(&conn).expect("SqliteIndex");
-
+        let mut index = index();
         let bs_a = index.create_backup_set(600).expect("bs_a");
         let bs_b = index.create_backup_set(1200).expect("bs_b");
 
@@ -782,10 +770,7 @@ mod test {
 
     #[test]
     fn get_latest_dir() {
-        let _ = env_logger::init();
-        let conn = Connection::open_in_memory().unwrap();
-        let mut index = SqlLightIndex::new(&conn).unwrap();
-
+        let mut index = index();
         let mtime = Timespec::new(10, 0);
         let n = Node::new_dir("a", mtime, 500).with_backup_set(5);
 
@@ -804,10 +789,7 @@ mod test {
 
     #[test]
     fn list() {
-        let _ = env_logger::init();
-        let conn = Connection::open_in_memory().unwrap();
-        let mut index = SqlLightIndex::new(&conn).unwrap();
-
+        let mut index = index();
         let mtime = Timespec::new(10, 0);
         let dir = Node::new_dir("dir", mtime, 500).with_backup_set(5);
         index.insert(dir).unwrap();
@@ -826,10 +808,7 @@ mod test {
 
     #[test]
     fn list_dir_only() {
-        let _ = env_logger::init();
-        let conn = Connection::open_in_memory().unwrap();
-        let mut index = SqlLightIndex::new(&conn).unwrap();
-
+        let mut index = index();
         let mtime = Timespec::new(10, 0);
         let n = Node::new_dir("a", mtime, 500).with_backup_set(5);
 

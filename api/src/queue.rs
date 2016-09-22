@@ -3,30 +3,38 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Condvar};
 
 pub struct Queue<T> {
+    name: String,
     max_len: Option<u64>,
-    q: Arc<Mutex<VecDeque<T>>>,
+    q: Arc<Mutex<QueueState<T>>>,
     cvar: Arc<Condvar>,
-    in_progress: Arc<Mutex<u64>>,
 }
 
 impl<T> Clone for Queue<T> {
     fn clone(&self) -> Self {
         Queue {
+            name: self.name.clone(),
             max_len: self.max_len.clone(),
             q: self.q.clone(),
             cvar: self.cvar.clone(),
-            in_progress: self.in_progress.clone(),
         }
     }
 }
 
+struct QueueState<T> {
+    q: VecDeque<T>,
+    in_progress: u64,
+}
+
 impl<T> Queue<T> {
-    pub fn new() -> Self {
+    pub fn new(name: &str) -> Self {
         Queue {
+            name: name.into(),
             max_len: None,
-            q: Arc::new(Mutex::new(VecDeque::new())),
+            q: Arc::new(Mutex::new(QueueState {
+                q: VecDeque::new(),
+                in_progress: 0,
+            })),
             cvar: Arc::new(Condvar::new()),
-            in_progress: Arc::new(Mutex::new(0)),
         }
     }
     pub fn with_max_len(mut self, max_len: u64) -> Self {
@@ -34,75 +42,83 @@ impl<T> Queue<T> {
         self
     }
     pub fn push(&mut self, t: T) {
-        let mut queue = self.q.lock().expect("lock");
+        let mut state = self.q.lock().expect("lock");
         if let Some(ref max_len) = self.max_len {
-            while queue.len() as u64 >= (*max_len - 1) {
-                debug!("Waiting for queue space. len={}", queue.len());
-                queue = self.cvar.wait(queue).expect("cvar");
+            while state.q.len() as u64 >= (*max_len - 1) {
+                debug!("({}) Waiting for queue space. len={}",
+                       self.name,
+                       state.q.len());
+                state = self.cvar.wait(state).expect("cvar");
             }
         }
-        debug!("Pushing item. len={}", queue.len());
-        queue.push_back(t);
-        debug!("Pushed item. len={}", queue.len());
+        debug!("({}) Pushing item. len={}", self.name, state.q.len());
+        state.q.push_back(t);
+        debug!("({}) Pushed item. len={}", self.name, state.q.len());
         self.cvar.notify_all();
     }
     pub fn try_pop(&mut self) -> Option<QueueItem<T>> {
-        let mut queue = self.q.lock().expect("lock");
-        if let Some(item) = queue.pop_front() {
-            debug!("Popped item. Post pop len={}", queue.len());
+        let mut state = self.q.lock().expect("lock");
+        if let Some(item) = state.q.pop_front() {
+            debug!("({}) Popped item. Post pop len={}",
+                   self.name,
+                   state.q.len());
+            state.in_progress += 1;
             self.cvar.notify_all();
-            let mut count = self.in_progress.lock().expect("in_progress lock");
-            *count += 1;
             return Some(QueueItem::new(self, item));
         }
         None
     }
     pub fn pop(&mut self) -> QueueItem<T> {
-        let mut queue = self.q.lock().expect("lock");
-        while queue.is_empty() {
-            debug!("Waiting to pop. len={}", queue.len());
-            queue = self.cvar.wait(queue).expect("cvar");
+        let mut state = self.q.lock().expect("lock");
+        while state.q.is_empty() {
+            debug!("({}) Waiting to pop", self.name);
+            state = self.cvar.wait(state).expect("cvar");
         }
-        if let Some(item) = queue.pop_front() {
-            debug!("Popped item. Post pop len={}", queue.len());
+        if let Some(item) = state.q.pop_front() {
+            state.in_progress += 1;
+            debug!("({}) Popped item. Post pop len={}, in_progress={}",
+                   self.name,
+                   state.q.len(),
+                   state.in_progress);
             self.cvar.notify_all();
-            let mut count = self.in_progress.lock().expect("in_progress lock");
-            *count += 1;
             return QueueItem::new(self, item);
         }
         unreachable!();
     }
     pub fn pop_until_complete(&mut self) -> Option<QueueItem<T>> {
-        let mut queue = self.q.lock().expect("lock");
-        while !queue.is_empty() || self.in_progress() > 0 {
-            debug!("Waiting to pop. len={}", queue.len());
-            queue = self.cvar.wait(queue).expect("cvar");
+        let mut state = self.q.lock().expect("lock");
+        while !state.q.is_empty() || self.in_progress() > 0 {
+            debug!("({}) Waiting to pop. len={}", self.name, state.q.len());
+            state = self.cvar.wait(state).expect("cvar");
         }
-        if let Some(item) = queue.pop_front() {
-            debug!("Popped item. Post pop len={}", queue.len());
+        if let Some(item) = state.q.pop_front() {
+            debug!("({}) Popped item. Post pop len={}",
+                   self.name,
+                   state.q.len());
+            state.in_progress += 1;
             self.cvar.notify_all();
-            let mut count = self.in_progress.lock().expect("in_progress lock");
-            *count += 1;
             return Some(QueueItem::new(self, item));
         }
         unreachable!();
     }
     pub fn len(&self) -> u64 {
-        let queue = self.q.lock().expect("lock");
-        let count = self.in_progress.lock().expect("in_progress lock");
-        queue.len() as u64 + *count
+        let state = self.q.lock().expect("lock");
+        state.in_progress + state.q.len() as u64
     }
     pub fn in_progress(&self) -> u64 {
-        let count = self.in_progress.lock().expect("in_progress lock");
-        *count
+        let state = self.q.lock().expect("lock");
+        state.in_progress
     }
     pub fn wait(&mut self) {
-        let mut queue = self.q.lock().expect("lock");
-        while !queue.is_empty() {
-            debug!("Waiting for queue empty. len={}", queue.len());
-            queue = self.cvar.wait(queue).expect("cvar");
+        let mut state = self.q.lock().expect("lock");
+        while !state.q.is_empty() || state.in_progress != 0 {
+            debug!("({}) Waiting for queue empty. len={}, in_progress={}",
+                   self.name,
+                   state.q.len(),
+                   state.in_progress);
+            state = self.cvar.wait(state).expect("cvar");
         }
-        debug!("Queue is empty");
+        debug!("({}) Queue is empty", self.name);
     }
 }
 
@@ -110,7 +126,8 @@ impl<T> Queue<T> {
 
 pub struct QueueItem<T> {
     t: Option<T>,
-    in_progress: Arc<Mutex<u64>>,
+    state: Arc<Mutex<QueueState<T>>>,
+    cvar: Arc<Condvar>,
     success: bool,
 }
 
@@ -118,7 +135,8 @@ impl<T> QueueItem<T> {
     fn new(queue: &Queue<T>, t: T) -> Self {
         QueueItem {
             t: Some(t),
-            in_progress: queue.in_progress.clone(),
+            state: queue.q.clone(),
+            cvar: queue.cvar.clone(),
             success: false,
         }
     }
@@ -132,14 +150,16 @@ impl<T> QueueItem<T> {
 
 impl<T> Drop for QueueItem<T> {
     fn drop(&mut self) {
-        let mut count = self.in_progress.lock().expect("in_progress lock");
-        *count -= 1;
+        let mut state = self.state.lock().expect("state lock");
+        state.in_progress -= 1;
 
         if self.success {
             trace!("Drop with success");
         } else {
             warn!("Drop NO success");
         }
+
+        self.cvar.notify_all();
     }
 }
 
@@ -153,7 +173,7 @@ mod test {
     fn push_pop_single_thread_single_item() {
         let _ = env_logger::init();
 
-        let mut queue = Queue::new();
+        let mut queue = Queue::new("test");
         assert_eq!(0, queue.len());
         {
             queue.push(0);
@@ -170,7 +190,7 @@ mod test {
     fn push_pop_single_thread_multi_item() {
         let _ = env_logger::init();
 
-        let mut queue = Queue::new();
+        let mut queue = Queue::new("test");
         for _i in 0..10 {
             queue.push(0);
         }
@@ -192,7 +212,7 @@ mod test {
         let thread_push;
         let thread_pop;
 
-        let mut queue = Queue::new();
+        let queue = Queue::new("test");
         {
             let mut queue = queue.clone();
             thread_push = thread::spawn(move || {
@@ -222,7 +242,7 @@ mod test {
     fn pop_drain_multi_thread() {
         let _ = env_logger::init();
 
-        let mut queue = Queue::new();
+        let mut queue = Queue::new("test");
         {
             let mut queue = queue.clone();
             for _ in 0..10000 {
@@ -254,7 +274,7 @@ mod test {
         let thread_push_b;
         let thread_pop;
 
-        let mut queue: Queue<u64> = Queue::new().with_max_len(2);
+        let queue: Queue<u64> = Queue::new("test").with_max_len(2);
         {
             let mut queue = queue.clone();
             thread_push_a = thread::spawn(move || {

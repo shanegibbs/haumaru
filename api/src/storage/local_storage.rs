@@ -8,6 +8,7 @@ use std::io;
 use std::io::{Read, copy};
 use std::fs::{create_dir_all, rename};
 use rustc_serialize::hex::ToHex;
+use std::sync::{Arc, Mutex};
 
 use {EngineConfig, Node, Storage};
 use storage::{SendRequest, hash_dir, hash_path};
@@ -31,9 +32,18 @@ impl fmt::Display for LocalStorageError {
     }
 }
 
-#[derive(Clone)]
 pub struct LocalStorage {
     target: String,
+    m: Arc<Mutex<bool>>,
+}
+
+impl Clone for LocalStorage {
+    fn clone(&self) -> Self {
+        LocalStorage {
+            target: self.target.clone(),
+            m: self.m.clone(),
+        }
+    }
 }
 
 impl LocalStorage {
@@ -55,7 +65,10 @@ impl LocalStorage {
                                                            {:?}",
                                                           storage_path)));
         }
-        Ok(LocalStorage { target: storage_path.to_str().unwrap().to_string() })
+        Ok(LocalStorage {
+            target: storage_path.to_str().unwrap().to_string(),
+            m: Arc::new(Mutex::new(true)),
+        })
     }
 }
 
@@ -65,9 +78,11 @@ impl LocalStorage {
 // mut ins: Box<Read>
 impl Storage for LocalStorage {
     fn send(&self, req: SendRequest) -> Result<Node, Box<Error>> {
-        let SendRequest { md5: _md5, sha256: hash, node, reader: mut ins, size: _size } = req;
+        let _lock = self.m.lock().unwrap();
 
+        let SendRequest { md5: _md5, sha256: hash, node, reader: mut ins, size: _size } = req;
         let hex = hash.to_hex();
+        debug!("Sending {:?}", hash);
 
         let mut hash_filename = PathBuf::new();
         hash_filename.push(&self.target);
@@ -78,11 +93,9 @@ impl Storage for LocalStorage {
             return Ok(node);
         }
 
-        debug!("Sending {:?}", hash);
-
         let mut dst_path = PathBuf::new();
         dst_path.push(&self.target);
-        dst_path.push("_");
+        dst_path.push(format!("_"));
 
         debug!("Writing to {:?}", dst_path);
 
@@ -172,6 +185,10 @@ mod test {
     use std::fs::{File, create_dir_all, remove_dir_all};
     use std::io::{Cursor, Read};
     use std::path::PathBuf;
+    use time::Timespec;
+    use storage::SendRequest;
+    use storage::SendRequestReader::*;
+    use node::{Node, NodeKind};
     use {EngineConfig, Storage};
 
     #[test]
@@ -193,7 +210,9 @@ mod test {
         let cursor = Cursor::new(vec![]);
 
         let storage = LocalStorage::new(&config).expect("new local storage");
-        storage.send(&[], &hash, 0, box cursor).expect("Send stream");
+        let node = Node::new("a", NodeKind::File, Timespec::new(0, 0), 0, 100);
+        let req = SendRequest::new(vec![], hash, node, InMemory(cursor), 0);
+        storage.send(req).expect("Send stream");
 
         let mut hash_filename = path.clone();
         hash_filename.push("store");
@@ -227,7 +246,13 @@ mod test {
         let cursor = Cursor::new(content.to_string().into_bytes());
 
         let storage = LocalStorage::new(&config).expect("new local storage");
-        storage.send(&[], &hash, 0, box cursor).expect("Send stream");
+        let node = Node::new("a",
+                             NodeKind::File,
+                             Timespec::new(0, 0),
+                             content.len() as u64,
+                             100);
+        let req = SendRequest::new(vec![], hash, node, InMemory(cursor), content.len() as u64);
+        storage.send(req).expect("Send stream");
 
         let mut hash_filename = path.clone();
         hash_filename.push("store");
