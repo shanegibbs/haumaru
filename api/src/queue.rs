@@ -140,11 +140,21 @@ impl<T> QueueItem<T> {
             success: false,
         }
     }
-    pub fn take(&mut self) -> T {
+    pub fn success(&mut self) -> T {
+        self.success = true;
         self.t.take().expect("Already taken")
     }
-    pub fn success(&mut self) {
-        self.success = true;
+}
+
+impl<T> AsRef<T> for QueueItem<T> {
+    fn as_ref(&self) -> &T {
+        self.t.as_ref().expect("Already taken")
+    }
+}
+
+impl<T> AsMut<T> for QueueItem<T> {
+    fn as_mut(&mut self) -> &mut T {
+        self.t.as_mut().expect("Already taken")
     }
 }
 
@@ -156,7 +166,12 @@ impl<T> Drop for QueueItem<T> {
         if self.success {
             trace!("Drop with success");
         } else {
-            warn!("Drop NO success");
+            if self.t.is_some() {
+                warn!("Drop NO success. Adding to back of queue.");
+                state.q.push_back(self.t.take().unwrap());
+            } else {
+                warn!("Drop NO success");
+            }
         }
 
         self.cvar.notify_all();

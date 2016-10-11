@@ -1,11 +1,19 @@
+#![allow(warnings)]
+
+use std::fmt::Display;
 
 pub fn retry_forever<F, T, E>(mut f: F) -> T
-    where F: FnMut() -> Result<T, E>
+    where F: FnMut() -> Result<T, E>,
+          E: Display
 {
+    let mut i = 1;
     loop {
-        if let Ok(t) = f() {
-            return t;
+        match f() {
+            Ok(t) => return t,
+            Err(e) => {
+                warn!("Attempt {}. {}", i, e);
+            }
         }
-        warn!("Attempt failed");
+        i += 1;
     }
 }

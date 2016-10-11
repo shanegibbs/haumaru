@@ -20,7 +20,7 @@ impl<I, S> Engine for DefaultEngine<I, S>
     where I: Index + Send + Clone + 'static,
           S: Storage + 'static
 {
-    fn run(&mut self) -> StdResult<u64, Box<StdError>> {
+    fn run(&mut self) -> StdResult<(), Box<StdError>> {
 
         info!("Starting backup engine on {}", self.config.path());
 
@@ -131,7 +131,7 @@ impl<I, S> Engine for DefaultEngine<I, S>
                         info!("{} - {}", queue_stats, key);
                         debug!("Detected DELETE on {:?}, {:?}", change, existing_node);
                         self.index
-                            .insert(existing_node.as_deleted().with_backup_set(backup_set))
+                            .insert(&existing_node.as_deleted().with_backup_set(backup_set))
                             .map_err(|e| DefaultEngineError::Index(box e))?;
                     }
                 }

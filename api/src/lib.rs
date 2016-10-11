@@ -56,7 +56,7 @@ use storage::SendRequest;
 pub use index::Index;
 
 pub trait Engine {
-    fn run(&mut self) -> Result<u64, Box<Error>>;
+    fn run(&mut self) -> Result<(), Box<Error>>;
     fn process_change(&mut self, backup_set: u64, change: Change) -> Result<(), Box<Error>>;
     fn verify_store(&mut self) -> Result<(), Box<Error>>;
     fn restore(&mut self,
@@ -72,7 +72,7 @@ pub trait Engine {
 }
 
 pub trait Storage: Send + Clone {
-    fn send(&self, req: SendRequest) -> Result<Node, Box<Error>>;
+    fn send(&self, req: &mut SendRequest) -> Result<(), Box<Error>>;
     fn retrieve(&self, hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>>;
     fn verify(&self, Node) -> Result<Option<Node>, Box<Error>>;
 }
@@ -201,88 +201,49 @@ fn test_split_key() {
 
 }
 
-fn build_storage() -> storage::S3Storage {
+fn build_storage(config: EngineConfig) -> storage::S3Storage {
     // LocalStorage::new(&config)
     //     .map_err(|e| HaumaruError::Storage(box e))?;
-    storage::S3Storage::new()
+    storage::S3Storage::new(config)
 }
 
-pub fn run(user_config: Config) -> Result<(), HaumaruError> {
-    let config: EngineConfig = user_config.try_into()?;
-
-    let mut pathb = PathBuf::new();
-    pathb.push(config.path());
-    let path = pathb.as_path();
-    if !path.exists() {
-        return Err(HaumaruError::Other(format!("Backup path does not exist: {}", config.path())));
-    }
-
+fn build_index(config: EngineConfig) -> Result<SqlLightIndex, HaumaruError> {
     let mut working_path = PathBuf::new();
     working_path.push(config.working());
     create_dir_all(&working_path).unwrap();
-    let working_abs = working_path.canonicalize().unwrap().to_str().unwrap().to_string();
 
     let mut db_path = working_path.clone();
     db_path.push("haumaru.idx");
 
     let conn = Connection::open(&db_path)
         .map_err(|e| HaumaruError::SqlLite(format!("Failed to open database {:?}", db_path), e))?;
-
-    let mut store_path = working_path.clone();
-    store_path.push("store");
-    create_dir_all(&store_path).unwrap();
-
-    {
-        let index = SqlLightIndex::new(conn)
-            .map_err(|e| HaumaruError::Index(box e))?;
-        // let index = SingleThreadIndex::new(index);
-
-        let mut excludes = HashSet::new();
-        excludes.insert(working_abs);
-
-        let mut engine = DefaultEngine::new(config, excludes, index, build_storage())
-            .map_err(|e| HaumaruError::Engine(e))?;
-        engine.run().map_err(|e| HaumaruError::Engine(e))?;
-    }
-
-    Ok(())
+    Ok(SqlLightIndex::new(conn).map_err(|e| HaumaruError::Index(box e))?)
 }
 
 fn setup_and_run<F>(config: EngineConfig, mut f: F) -> Result<(), HaumaruError>
     where F: FnMut(&mut Engine) -> Result<(), HaumaruError>
 {
-    let conn = SqlLightIndex::open_database(&config).map_err(|e| HaumaruError::Index(box e))?;
-    let index = SqlLightIndex::new(conn)
-        .map_err(|e| HaumaruError::Index(box e))?;
-    // let index = SingleThreadIndex::new(index);
-
     let mut excludes = HashSet::new();
     excludes.insert(config.abs_working().to_str().unwrap().to_string());
 
-    let mut engine = DefaultEngine::new(config, excludes, index, build_storage())
+    let mut engine = DefaultEngine::new(config.clone(),
+                                        excludes,
+                                        build_index(config.clone())?,
+                                        build_storage(config))
         .map_err(|e| HaumaruError::Engine(e))?;
 
     f(&mut engine)
 }
 
+pub fn run(user_config: Config) -> Result<(), HaumaruError> {
+    let config: EngineConfig = user_config.try_into()?;
+    setup_and_run(config, |eng| eng.run().map_err(|e| HaumaruError::Engine(e)))
+}
+
 pub fn verify(user_config: Config) -> Result<(), HaumaruError> {
     let config: EngineConfig = user_config.try_into()?;
-    let config = config.detached();
-
-    let conn = SqlLightIndex::open_database(&config).map_err(|e| HaumaruError::Index(box e))?;
-    // let index = SingleThreadIndex::new({
-    //     SqlLightIndex::new(&conn).map_err(|e| HaumaruError::Index(box e))?
-    // });
-    let index = SqlLightIndex::new(conn).map_err(|e| HaumaruError::Index(box e))?;
-
-    let mut excludes = HashSet::new();
-    excludes.insert(config.abs_working().to_str().unwrap().to_string());
-
-    let mut engine = DefaultEngine::new(config, excludes, index, build_storage())
-        .map_err(|e| HaumaruError::Engine(e))?;
-    engine.verify_store().map_err(|e| HaumaruError::Engine(e))?;
-
-    Ok(())
+    setup_and_run(config,
+                  |eng| eng.verify_store().map_err(|e| HaumaruError::Engine(e)))
 }
 
 pub fn restore(user_config: Config, key: &str, target: &str) -> Result<(), HaumaruError> {

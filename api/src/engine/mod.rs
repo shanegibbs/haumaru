@@ -110,19 +110,17 @@ impl<I, S> DefaultEngine<I, S>
             }
 
             // sending worker threads that [send -> sent]
-            for _ in 0..12 {
+            for _ in 0..1 {
                 let mut send_queue = send_queue.clone();
                 let mut sent_queue = sent_queue.clone();
                 let storage = storage.clone();
                 thread::spawn(move || {
                     loop {
                         let mut item = send_queue.pop();
-                        let req = item.take();
-                        let path = req.node().path().to_string();
-                        match storage.send(req) {
-                            Ok(node) => {
-                                sent_queue.push(node);
-                                item.success();
+                        let path = item.as_ref().node().path().to_string();
+                        match storage.send(item.as_mut()) {
+                            Ok(()) => {
+                                sent_queue.push(item.success().complete());
                             }
                             Err(e) => error!("Failing sending {}: {}", path, e),
                         }
@@ -137,9 +135,8 @@ impl<I, S> DefaultEngine<I, S>
                 thread::spawn(move || {
                     loop {
                         let mut item = sent_queue.pop();
-                        let node = item.take();
-                        let path = node.path().to_string();
-                        match index.insert(node) {
+                        let path = item.as_ref().path().to_string();
+                        match index.insert(item.as_ref()) {
                             Ok(n) => {
                                 debug!("Inserted {} - {:?}", path, n);
                                 item.success();
@@ -308,7 +305,7 @@ impl<I, S> DefaultEngine<I, S>
         Ok(if n.is_file() {
             self.pre_send_queue.push(n);
         } else {
-            self.index.insert(n).map_err(|e| DefaultEngineError::Index(box e))?;
+            self.index.insert(&n).map_err(|e| DefaultEngineError::Index(box e))?;
             ()
         })
     }

@@ -1,10 +1,11 @@
 ## Work in Progress
 
-Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [babirusa](https://github.com/shanegibbs/babirusa) (Sep 11, 2014) and a few others that did not make it online.
+Successor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [babirusa](https://github.com/shanegibbs/babirusa) (Sep 11, 2014) and a few others that did not make it online.
 
 ## TODO
 
 ### Primary
+* Stage Nodes to disk before inserting in DB. Only insert once backup run is complete.
 * S3 upload backup_set records
 * Full integration testing
 
@@ -13,7 +14,7 @@ Sucessor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), [
 * Use transactions for updates
 * Add tests for cli/config.yml interface
 * Handle sym/hard links
-* Colapse backup sets
+* Collapse backup sets
 * Look into refactoring `Node` such that `validate()` is redundant
 * Overhaul errors
 * Handle database locked errors

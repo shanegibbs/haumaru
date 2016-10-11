@@ -22,7 +22,8 @@ pub fn setup_logging(default_log_str: &str) {
                    LogLevel::Info => "\x1b[34m",
                    LogLevel::Debug => "\x1b[36m",
                    LogLevel::Trace => "\x1b[36m",
-               }).unwrap();
+               })
+            .unwrap();
 
         write!(buf, "{}", record.level()).unwrap();
         if record.level() == LogLevel::Warn || record.level() == LogLevel::Info {
@@ -30,7 +31,7 @@ pub fn setup_logging(default_log_str: &str) {
         }
         write!(buf, "\x1b[0m] ").unwrap();
 
-        // write!(buf, "{} ", record.location().module_path()).unwrap();
+        write!(buf, "{} ", record.location().module_path()).unwrap();
 
         write!(buf, "{}", record.args()).unwrap();
 

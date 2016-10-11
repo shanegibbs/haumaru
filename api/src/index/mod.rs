@@ -12,7 +12,7 @@ pub trait Index {
     fn visit_all_hashable(&mut self,
                           f: &mut FnMut(Node) -> Result<(), IndexError>)
                           -> Result<(), IndexError>;
-    fn insert(&mut self, Node) -> Result<Node, IndexError>;
+    fn insert(&mut self, &Node) -> Result<(), IndexError>;
     fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, IndexError>;
     // fn backup_set_records(&mut self, backup_set: u64);
 

@@ -7,17 +7,21 @@ pub struct EngineConfig {
     working: String,
     period: Option<u32>,
     max_file_size: Option<u64>,
+    bucket: Option<String>,
+    prefix: Option<String>,
     detached: bool,
 }
 
 impl EngineConfig {
     /// Create new config
-    pub fn new(working: String) -> Self {
+    pub fn new(working: &str) -> Self {
         EngineConfig {
             path: None,
-            working: working,
+            working: working.into(),
             period: None,
             max_file_size: None,
+            bucket: None,
+            prefix: None,
             detached: false,
         }
     }
@@ -37,6 +41,16 @@ impl EngineConfig {
         self
     }
 
+    pub fn with_bucket(mut self, bucket: &str) -> Self {
+        self.bucket = Some(bucket.into());
+        self
+    }
+
+    pub fn with_prefix(mut self, prefix: &str) -> Self {
+        self.prefix = Some(prefix.into());
+        self
+    }
+
     pub fn detached(mut self) -> Self {
         self.detached = true;
         self
@@ -44,13 +58,7 @@ impl EngineConfig {
 
     /// Create config for running without a backup path (for e.g. verify)
     pub fn new_detached(working: &str) -> EngineConfig {
-        EngineConfig {
-            path: None,
-            working: working.to_string(),
-            period: None,
-            max_file_size: None,
-            detached: true,
-        }
+        Self::new(working).detached()
     }
     pub fn path(&self) -> &str {
         self.path.as_ref().expect("path not specified")
@@ -72,6 +80,12 @@ impl EngineConfig {
     }
     pub fn max_file_size(&self) -> Option<u64> {
         self.max_file_size.clone()
+    }
+    pub fn bucket(&self) -> Option<&str> {
+        self.bucket.as_ref().map(|s| s.as_ref())
+    }
+    pub fn prefix(&self) -> Option<&str> {
+        self.prefix.as_ref().map(|s| s.as_ref())
     }
     pub fn is_detached(&self) -> bool {
         self.detached

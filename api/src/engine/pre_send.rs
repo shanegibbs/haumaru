@@ -24,32 +24,30 @@ impl PreSendWorker {
     pub fn run(mut self) {
         loop {
             let mut item = self.ingest.pop();
-            let node = item.take();
 
-            match self.process(node) {
+            match self.process(item.as_ref()) {
                 Ok(req) => {
                     self.outgest.push(req);
+                    item.success();
                 }
                 Err(e) => {
                     error!("Failed processing: {}", e);
                     continue;
                 }
             }
-
-            item.success();
         }
     }
 
-    fn process(&self, mut n: Node) -> Result<SendRequest, DefaultEngineError> {
+    fn process(&self, node: &Node) -> Result<SendRequest, DefaultEngineError> {
         use std::io::{Cursor, copy};
 
-        assert!(n.is_file(), true);
+        assert!(node.is_file(), true);
 
-        debug!("Processing {}", n.path());
+        debug!("Processing {}", node.path());
 
         let mut path = PathBuf::new();
         path.push(self.config.path());
-        path.push(n.path());
+        path.push(node.path());
 
         let mut buffer = Cursor::new(vec![]);
 
@@ -77,12 +75,13 @@ impl PreSendWorker {
         };
 
         let (md5, sha256) = hasher.result();
-        n.set_hash(sha256.clone());
+        let mut node = node.clone();
+        node.set_hash(sha256.clone());
 
         buffer.set_position(0);
 
         let reader = SendRequestReader::InMemory(buffer);
-        debug!("Processing {} complete", n.path());
-        Ok(SendRequest::new(md5, sha256, n, reader, size))
+        debug!("Processing {} complete", node.path());
+        Ok(SendRequest::new(md5, sha256, node, reader, size))
     }
 }

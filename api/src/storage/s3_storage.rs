@@ -8,8 +8,10 @@ use crypto::hmac::Hmac;
 use crypto::sha2::Sha256;
 use crypto::mac::Mac;
 use hyper::client::*;
+use hyper::{Url, header};
 use hyper::header::Headers;
 use hyper::method::Method;
+use hyper::status::StatusCode;
 use hyper;
 use regex::Regex;
 use rustc_serialize::base64::{CharacterSet, ToBase64, Newline};
@@ -19,13 +21,22 @@ use rustc_serialize::hex::ToHex;
 use {Node, Storage};
 use storage::SendRequest;
 use hasher::Hasher;
-use retry::retry_forever;
+use engine::EngineConfig;
+// use retry::retry_forever;
 
 pub struct S3Storage {
     // region: String,
     bucket: String,
     prefix: String,
+    access_key: String,
+    secret_key: String,
     client: Client,
+}
+
+fn new_client() -> Client {
+    let mut client = Client::new();
+    client.set_redirect_policy(RedirectPolicy::FollowNone);
+    client
 }
 
 impl Clone for S3Storage {
@@ -33,17 +44,25 @@ impl Clone for S3Storage {
         S3Storage {
             bucket: self.bucket.clone(),
             prefix: self.prefix.clone(),
-            client: Client::new(),
+            access_key: self.access_key.clone(),
+            secret_key: self.secret_key.clone(),
+            client: new_client(),
         }
     }
 }
 
 impl S3Storage {
-    pub fn new() -> Self {
+    pub fn new(config: EngineConfig) -> Self {
         S3Storage {
-            bucket: "haumaru-test2".to_string(),
-            prefix: "test".to_string(),
-            client: Client::new(),
+            bucket: config.bucket().map(|s| s.to_string()).expect("S3 bucket"),
+            prefix: config.prefix().map(|s| s.to_string()).unwrap_or(String::new()),
+            access_key: env::var("AWS_ACCESS_KEY_ID")
+                .expect("AWS_ACCESS_KEY_ID")
+                .into(),
+            secret_key: env::var("AWS_SECRET_ACCESS_KEY")
+                .expect("AWS_SECRET_ACCESS_KEY")
+                .into(),
+            client: new_client(),
         }
     }
 }
@@ -220,93 +239,27 @@ fn test_put_signature() {
 }
 
 impl S3Storage {
-    fn key_exists(&self, dt: DateTime<UTC>, key: &str) -> bool {
+    fn key_exists(&self, dt: DateTime<UTC>, key: &str) -> Result<bool, String> {
         let amzdate = dt.format("%Y%m%dT%H%M%SZ").to_string();
         let datestamp = dt.format("%Y%m%d").to_string();
 
-        let sig = AwsSignature {
-            access_key: env::var("AWS_ACCESS_KEY_ID").expect("AWS_ACCESS_KEY_ID").to_string(),
-            secret_key: env::var("AWS_SECRET_ACCESS_KEY")
-                .expect("AWS_SECRET_ACCESS_KEY")
-                .to_string(),
-            method: "GET".to_string(),
-            service: "s3".to_string(),
-            host: "haumaru-test2.s3.amazonaws.com".to_string(),
-            region: "us-west-2".to_string(),
-            amzdate: amzdate,
-            datestamp: datestamp,
-            canonical_uri: "/".to_string(),
-            canonical_querystring: format!("list-type=2&prefix={}", key).replace("/", "%2F"),
-            payload_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-                .to_string(),
-            headers: HashMap::new(),
-        };
-        let headers = sig.signed_headers();
+        let mut response_body;
+        let mut host = format!("{}.s3.amazonaws.com", self.bucket);
+        let mut canonical_uri = "/".to_string();
+        let mut canonical_querystring = format!("list-type=2&prefix={}", key).replace("/", "%2F");
 
-        let request_url = format!("https://{}?{}", sig.host, sig.canonical_querystring);
-
-        let mut res = retry_forever(move || {
-            let result = self.client.get(&request_url).headers(headers.clone()).send();
-            if let Err(e) = result {
-                error!("Check S3 key failed: {} - {:?}", e, e);
-                return Err(e);
-            }
-            result
-        });
-
-        debug!("{:?}", res);
-        let mut response_body = String::new();
-        res.read_to_string(&mut response_body).expect("read_to_string");
-        debug!("List Result:\n{:?}", response_body);
-
-        assert_eq!(hyper::Ok, res.status);
-
-        lazy_static! {
-            static ref RE: Regex = Regex::new(".*<KeyCount>([\\d]+)</KeyCount>.*").unwrap();
-        }
-        let caps = RE.captures(&response_body).unwrap();
-        if let Some(n) = caps.at(1) {
-            n == "1"
-        } else {
-            false
-        }
-    }
-
-    fn key_from_sha256(&self, hash: &str) -> String {
-        format!("{}/{}/{}/{}", self.prefix, &hash[0..1], &hash[1..2], &hash)
-    }
-}
-
-impl Storage for S3Storage {
-    fn send(&self, req: SendRequest) -> Result<Node, Box<Error>> {
-        let SendRequest { md5, sha256: hash, node, reader: mut ins, size } = req;
-        let hex = hash.to_hex();
-        let key = self.key_from_sha256(&hex);
-
-        debug!("Using s3://{}/{}", self.bucket, key);
-
-        let client = Client::new();
-
-        self.key_exists(UTC::now(), &key);
-
-        {
-            let dt: DateTime<UTC> = UTC::now();
-            let amzdate = dt.format("%Y%m%dT%H%M%SZ").to_string();
-            let datestamp = dt.format("%Y%m%d").to_string();
-
+        loop {
             let sig = AwsSignature {
-                access_key: env::var("AWS_ACCESS_KEY_ID").expect("AWS_ACCESS_KEY_ID").to_string(),
-                secret_key: env::var("AWS_SECRET_ACCESS_KEY")
-                    .expect("AWS_SECRET_ACCESS_KEY")
-                    .to_string(),
+                access_key: self.access_key.clone(),
+                secret_key: self.secret_key.clone(),
                 method: "GET".to_string(),
                 service: "s3".to_string(),
-                host: "haumaru-test2.s3.amazonaws.com".to_string(),
+                host: host.clone(),
                 region: "us-west-2".to_string(),
-                amzdate: amzdate,
-                datestamp: datestamp,
-                canonical_uri: "/".to_string(),
-                canonical_querystring: format!("list-type=2&prefix={}", key).replace("/", "%2F"),
+                amzdate: amzdate.clone(),
+                datestamp: datestamp.clone(),
+                canonical_uri: canonical_uri.clone(),
+                canonical_querystring: canonical_querystring.clone(),
                 payload_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     .to_string(),
                 headers: HashMap::new(),
@@ -315,16 +268,92 @@ impl Storage for S3Storage {
 
             let request_url = format!("https://{}?{}", sig.host, sig.canonical_querystring);
 
-            let mut res = client.get(&request_url).headers(headers).send().unwrap();
+            let mut res = self.client
+                .get(&request_url)
+                .headers(headers.clone())
+                .send()
+                .map_err(|e| {
+                    format!("Checking S3 key {} failed: {}. URL: {:?}, Headers: {:?}",
+                            key,
+                            e,
+                            request_url,
+                            headers)
+                })?;
+
             debug!("{:?}", res);
-            let mut response_body = String::new();
+            response_body = String::new();
             res.read_to_string(&mut response_body).expect("read_to_string");
             debug!("List Result:\n{:?}", response_body);
 
-            assert_eq!(hyper::Ok, res.status);
+            if res.status == hyper::Ok {
+                break;
+            } else if res.status == StatusCode::TemporaryRedirect {
+                let loc: Option<&header::Location> = res.headers.get();
+                let loc = match loc {
+                    None => return Err(format!("No Location header on redirect")),
+                    Some(l) => l,
+                };
+                debug!("Location header for redirect: {:?}", loc);
+
+                let url = match Url::parse(&loc.0) {
+                    Err(e) => return Err(format!("Failed to parse URL: {}", e)),
+                    Ok(u) => u,
+                };
+
+                host = match url.host_str() {
+                    None => return Err(format!("No host part on redirect")),
+                    Some(h) => h.into(),
+                };
+
+                canonical_uri = url.path().into();
+
+                canonical_querystring = match url.query() {
+                    None => "".into(),
+                    Some(s) => s.into(),
+                };
+
+            } else {
+                return Err(format!("Failed to check key exists: {}. {}\n{}",
+                                   res.status,
+                                   request_url,
+                                   response_body)
+                    .into());
+            }
         }
 
-        debug!("Uploading s3://{}/{}", self.bucket, key);
+        lazy_static! {
+            static ref RE: Regex = Regex::new(".*<KeyCount>([\\d]+)</KeyCount>.*").unwrap();
+        }
+        let caps = RE.captures(&response_body).unwrap();
+
+        Ok(if let Some(n) = caps.at(1) {
+            n == "1"
+        } else {
+            false
+        })
+    }
+
+    fn key_from_sha256(&self, hash: &str) -> String {
+        format!("{}/{}/{}/{}", self.prefix, &hash[0..1], &hash[1..2], &hash)
+    }
+}
+
+impl Storage for S3Storage {
+    fn send(&self, req: &mut SendRequest) -> Result<(), Box<Error>> {
+        let &mut SendRequest { ref md5, sha256: ref hash, node: ref _node, ref mut reader, size } = req;
+        let hex = hash.to_hex();
+        let key = self.key_from_sha256(&hex);
+
+        debug!("Using s3://{}/{}", self.bucket, key);
+
+        let client = Client::new();
+
+        if self.key_exists(UTC::now(), &key)? {
+            info!("Storage already contains {}", key);
+            return Ok(());
+        }
+
+        info!("Uploading s3://{}/{} ({} bytes)", self.bucket, key, size);
 
         {
             let mut headers = HashMap::new();
@@ -342,13 +371,11 @@ impl Storage for S3Storage {
             let datestamp = dt.format("%Y%m%d").to_string();
 
             let sig = AwsSignature {
-                access_key: env::var("AWS_ACCESS_KEY_ID").expect("AWS_ACCESS_KEY_ID").to_string(),
-                secret_key: env::var("AWS_SECRET_ACCESS_KEY")
-                    .expect("AWS_SECRET_ACCESS_KEY")
-                    .to_string(),
+                access_key: self.access_key.clone(),
+                secret_key: self.secret_key.clone(),
                 method: "PUT".to_string(),
                 service: "s3".to_string(),
-                host: "haumaru-test2.s3.amazonaws.com".to_string(),
+                host: format!("{}.s3.amazonaws.com", self.bucket),
                 region: "us-west-2".to_string(),
                 amzdate: amzdate,
                 datestamp: datestamp,
@@ -363,9 +390,9 @@ impl Storage for S3Storage {
 
             let mut res = client.request(Method::Put, &request_url)
                 .headers(headers)
-                .body(Body::SizedBody(&mut ins, size))
+                .body(Body::SizedBody(reader, size))
                 .send()
-                .unwrap();
+                .map_err(|e| format!("Upload failed: {}", e))?;
 
             debug!("{:?}", res);
 
@@ -373,9 +400,11 @@ impl Storage for S3Storage {
             res.read_to_string(&mut response_body).expect("read_to_string");
             debug!("Upload Result:\n{:?}", response_body);
 
-            assert_eq!(res.status, hyper::Ok);
+            if res.status != hyper::Ok {
+                return Err(format!("Upload failed with {}", res.status).into());
+            }
         }
-        Ok(node)
+        Ok(())
     }
     fn retrieve(&self, _hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>> {
         use std::io::Cursor;
@@ -384,7 +413,7 @@ impl Storage for S3Storage {
     fn verify(&self, n: Node) -> Result<Option<Node>, Box<Error>> {
         let hex = n.hash().as_ref().expect("hash").to_hex();
         let key = self.key_from_sha256(&hex);
-        if self.key_exists(UTC::now(), &key) {
+        if self.key_exists(UTC::now(), &key)? {
             info!("{} OK", key);
             Ok(None)
         } else {

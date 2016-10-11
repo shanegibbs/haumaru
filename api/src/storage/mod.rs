@@ -53,6 +53,9 @@ impl SendRequest {
     pub fn node(&self) -> &Node {
         &self.node
     }
+    pub fn complete(self) -> Node {
+        self.node
+    }
 }
 
 pub fn hash_dir(hash: &String) -> PathBuf {

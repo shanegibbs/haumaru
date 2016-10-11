@@ -355,7 +355,7 @@ impl Index for SqlLightIndex {
         Ok(Some(node))
     }
 
-    fn insert(&mut self, node: Node) -> Result<Node, IndexError> {
+    fn insert(&mut self, node: &Node) -> Result<(), IndexError> {
         debug!("Inserting {:?}", node);
         node.validate();
         // path_id, kind, mtime, size, mode, deleted, hash
@@ -431,7 +431,7 @@ impl Index for SqlLightIndex {
                            node.hash()])
                 .map_err(|e| IndexError::Fatal(format!("Insert node query failed: {}", e), None))?;
         }
-        Ok(node)
+        Ok(())
     }
 
     fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, IndexError> {

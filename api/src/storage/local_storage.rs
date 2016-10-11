@@ -77,10 +77,14 @@ impl LocalStorage {
 // _size: u64,
 // mut ins: Box<Read>
 impl Storage for LocalStorage {
-    fn send(&self, req: SendRequest) -> Result<Node, Box<Error>> {
+    fn send(&self, req: &mut SendRequest) -> Result<(), Box<Error>> {
         let _lock = self.m.lock().unwrap();
 
-        let SendRequest { md5: _md5, sha256: hash, node, reader: mut ins, size: _size } = req;
+        let &mut SendRequest { md5: ref _md5,
+                               sha256: ref hash,
+                               node: ref _node,
+                               ref mut reader,
+                               size: _size } = req;
         let hex = hash.to_hex();
         debug!("Sending {:?}", hash);
 
@@ -90,7 +94,7 @@ impl Storage for LocalStorage {
 
         if hash_filename.exists() {
             debug!("Already have {}", hex);
-            return Ok(node);
+            return Ok(());
         }
 
         let mut dst_path = PathBuf::new();
@@ -111,7 +115,7 @@ impl Storage for LocalStorage {
 
         debug!("Writing to {:?}", dst_path);
         let mut dst_file = File::create(&dst_path)?;
-        copy(&mut ins, &mut dst_file)
+        copy(reader, &mut dst_file)
             .map_err(|e| LocalStorageError::Io(format!("Failed writing to: {:?}", dst_path), e))?;
 
         debug!("Moving new hash to {:?}", hash_filename);
@@ -122,7 +126,7 @@ impl Storage for LocalStorage {
                                                    e))
             })?;
 
-        Ok(node)
+        Ok(())
     }
 
     fn retrieve(&self, hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>> {
