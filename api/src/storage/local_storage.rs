@@ -1,16 +1,17 @@
-use std::error::Error;
-use std::fmt;
+
+
+use {EngineConfig, Node, Storage};
 use crypto::digest::Digest;
 use crypto::sha2::Sha256;
-use std::path::PathBuf;
+use rustc_serialize::hex::ToHex;
+use std::error::Error;
+use std::fmt;
+use std::fs::{create_dir_all, rename};
 use std::fs::File;
 use std::io;
 use std::io::{Read, copy};
-use std::fs::{create_dir_all, rename};
-use rustc_serialize::hex::ToHex;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-
-use {EngineConfig, Node, Storage};
 use storage::{SendRequest, hash_dir, hash_path};
 
 #[derive(Debug)]
@@ -53,8 +54,7 @@ impl LocalStorage {
         storage_path.push("store");
 
         if !storage_path.exists() {
-            create_dir_all(&storage_path)
-                .map_err(|e| {
+            create_dir_all(&storage_path).map_err(|e| {
                     LocalStorageError::Generic(format!("Unable to create storage path {:?}: {}",
                                                        storage_path,
                                                        e))
@@ -108,8 +108,7 @@ impl Storage for LocalStorage {
         dir.push(&self.target);
         dir.push(hash_dir(&hex));
         debug!("Creating dir {:?}", dir);
-        create_dir_all(&dir)
-            .map_err(|e| {
+        create_dir_all(&dir).map_err(|e| {
                 LocalStorageError::Generic(format!("Failed to create dir {:?}: {}", dir, e))
             })?;
 
@@ -119,8 +118,7 @@ impl Storage for LocalStorage {
             .map_err(|e| LocalStorageError::Io(format!("Failed writing to: {:?}", dst_path), e))?;
 
         debug!("Moving new hash to {:?}", hash_filename);
-        rename(dst_path, &hash_filename)
-            .map_err(|e| {
+        rename(dst_path, &hash_filename).map_err(|e| {
                 LocalStorageError::Generic(format!("Failed to rename to {:?}: {}",
                                                    hash_filename,
                                                    e))
@@ -139,7 +137,7 @@ impl Storage for LocalStorage {
         Ok(Some(box File::open(hash_filename)?))
     }
 
-    fn verify(&self, node: Node) -> Result<Option<Node>, Box<Error>> {
+    fn verify(&self, node: Node) -> Result<(Node, bool), Box<Error>> {
         trace!("store.verify {:?}", node);
 
         let hex = node.hash_string();
@@ -149,7 +147,7 @@ impl Storage for LocalStorage {
 
         if !hash_filename.exists() {
             error!("Hash missing: {}", hex);
-            return Ok(Some(node));
+            return Ok((node, false));
         }
 
         let mut src_file = File::open(hash_filename)?;
@@ -174,10 +172,10 @@ impl Storage for LocalStorage {
 
         if vec != node.hash().clone().expect("can not validate without hash") {
             error!("Hash checksum failed: {}", hex);
-            return Ok(Some(node));
+            return Ok((node, false));
         }
 
-        Ok(None)
+        Ok((node, true))
     }
 }
 
@@ -185,15 +183,15 @@ impl Storage for LocalStorage {
 mod test {
     extern crate env_logger;
 
-    use super::*;
+    use {EngineConfig, Storage};
+    use node::{Node, NodeKind};
     use std::fs::{File, create_dir_all, remove_dir_all};
     use std::io::{Cursor, Read};
     use std::path::PathBuf;
-    use time::Timespec;
     use storage::SendRequest;
     use storage::SendRequestReader::*;
-    use node::{Node, NodeKind};
-    use {EngineConfig, Storage};
+    use super::*;
+    use time::Timespec;
 
     #[test]
     fn send_empty_file() {
@@ -206,7 +204,7 @@ mod test {
         let path = PathBuf::from(test_dir.clone()).canonicalize().expect("canonicalize test_dir");
         // end setup
 
-        let config = EngineConfig::new(test_dir.clone());
+        let config = EngineConfig::new(&test_dir);
 
         let hash = vec![227, 176, 196, 66, 152, 252, 28, 20, 154, 251, 244, 200, 153, 111, 185,
                         36, 39, 174, 65, 228, 100, 155, 147, 76, 164, 149, 153, 27, 120, 82, 184,
@@ -215,8 +213,8 @@ mod test {
 
         let storage = LocalStorage::new(&config).expect("new local storage");
         let node = Node::new("a", NodeKind::File, Timespec::new(0, 0), 0, 100);
-        let req = SendRequest::new(vec![], hash, node, InMemory(cursor), 0);
-        storage.send(req).expect("Send stream");
+        let mut req = SendRequest::new(vec![], hash, node, InMemory(cursor), 0);
+        storage.send(&mut req).expect("Send stream");
 
         let mut hash_filename = path.clone();
         hash_filename.push("store");
@@ -241,7 +239,7 @@ mod test {
         let path = PathBuf::from(test_dir.clone()).canonicalize().expect("canonicalize test_dir");
         // end setup
 
-        let config = EngineConfig::new(test_dir.clone());
+        let config = EngineConfig::new(&test_dir);
 
         let hash = vec![116, 231, 229, 187, 157, 34, 214, 219, 38, 191, 118, 148, 109, 64, 255,
                         243, 234, 159, 3, 70, 184, 132, 253, 6, 148, 146, 15, 204, 250, 209, 94,
@@ -255,8 +253,8 @@ mod test {
                              Timespec::new(0, 0),
                              content.len() as u64,
                              100);
-        let req = SendRequest::new(vec![], hash, node, InMemory(cursor), content.len() as u64);
-        storage.send(req).expect("Send stream");
+        let mut req = SendRequest::new(vec![], hash, node, InMemory(cursor), content.len() as u64);
+        storage.send(&mut req).expect("Send stream");
 
         let mut hash_filename = path.clone();
         hash_filename.push("store");

@@ -1,11 +1,11 @@
 [package]
-name = "haumaru_api"
+name = "haumaru-api"
 version = "0.1.0"
 authors = ["Shane Gibbs <shane@hands.net.nz>"]
 
 [dependencies]
 log = "*"
-notify = "*"
+notify = "2.6"
 rusqlite = "*"
 time = "*"
 chrono = "*"
@@ -13,9 +13,9 @@ rust-crypto = "*"
 rustc-serialize = "*"
 env_logger = "*"
 regex = "*"
-serde = "*"
-serde_macros = "*"
-serde_yaml = "*"
+serde = "0.8"
+serde_derive = "0.8"
+serde_yaml = "0.5"
 hyper = "*"
 lazy_static = "*"
 threadpool = "*"

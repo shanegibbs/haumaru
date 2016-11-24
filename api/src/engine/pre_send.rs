@@ -23,7 +23,7 @@ impl PreSendWorker {
     }
     pub fn run(mut self) {
         loop {
-            let mut item = self.ingest.pop();
+            let item = self.ingest.pop();
 
             match self.process(item.as_ref()) {
                 Ok(req) => {

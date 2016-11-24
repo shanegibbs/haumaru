@@ -1,10 +1,11 @@
+
+
+use {EngineConfig, HaumaruError};
+
+use serde_yaml;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::io::Read;
-
-use serde_yaml;
-
-use {HaumaruError, EngineConfig};
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Config {
@@ -48,8 +49,8 @@ impl<T: Read> AsConfig for T {
     fn as_config(&mut self) -> Result<Config, Box<Error>> {
         let mut buf = String::new();
         self.read_to_string(&mut buf)?;
-        let config: Config = serde_yaml::from_str(&buf)
-            .map_err(|e| box HaumaruError::Config(box e))?;
+        let config: Config =
+            serde_yaml::from_str(&buf).map_err(|e| box HaumaruError::ParseConfig(box e))?;
         Ok(config)
     }
 }

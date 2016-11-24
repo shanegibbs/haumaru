@@ -1,3 +1,4 @@
+#![allow(warnings)]
 //! DB Schema
 //!
 //! `path` Table
@@ -8,18 +9,18 @@
 //!     size, mode, deleted, hash
 //!
 
-use std::error::Error;
-use std::fmt;
-use time::Timespec;
-use rusqlite::{Connection, CachedStatement, Row};
+
+use {EngineConfig, Index, Node, NodeKind, Record};
+use index::{BackupSetController, IndexError};
+use rusqlite::{CachedStatement, Connection, Row};
 use rusqlite::Error as SqlError;
 use rusqlite::types::Value;
-use std::path::Path;
 use std::convert::{TryFrom, TryInto};
+use std::error::Error;
+use std::fmt;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
-
-use {EngineConfig, Node, NodeKind, Index, Record};
-use index::IndexError;
+use time::Timespec;
 
 #[derive(Debug)]
 pub enum SqlLightIndexError {
@@ -110,8 +111,8 @@ static GET_ALL_HASHABLE_QUERY_SQL: &'static str = "
     FROM node
     INNER JOIN path
     ON path.id = node.path_id
-    WHERE node.hash is not null
-    ORDER BY node.hash ASC";
+    WHERE node.hash is not null and path.path like ?
+    ORDER BY path.path, node.backup_set_id ASC";
 
 static GET_LATEST_QUERY_SQL: &'static str = "
     SELECT *
@@ -177,11 +178,15 @@ static DUMP_NODES_QUERY_SQL: &'static str = "
 
 pub struct SqlLightIndex {
     conn: Arc<Mutex<Connection>>,
+    controller: Arc<Mutex<BackupSetController>>,
 }
 
 impl Clone for SqlLightIndex {
     fn clone(&self) -> Self {
-        SqlLightIndex { conn: self.conn.clone() }
+        SqlLightIndex {
+            conn: self.conn.clone(),
+            controller: self.controller.clone(),
+        }
     }
 }
 
@@ -190,8 +195,7 @@ impl SqlLightIndex {
         let mut db_path = config.abs_working();
         db_path.push("haumaru.idx");
 
-        Ok(Connection::open(&db_path)
-            .map_err(|e| {
+        Ok(Connection::open(&db_path).map_err(|e| {
                 SqlLightIndexError::Connect(format!("Failed to open database {:?}", db_path), e)
             })?)
     }
@@ -218,7 +222,10 @@ impl SqlLightIndex {
         conn.execute(CREATE_INDEX_NODE_PARENT_ID_SQL, &[])
             .map_err(|e| SqlLightIndexError::CreateTable("node_parent".to_string(), e))?;
 
-        Ok(SqlLightIndex { conn: Arc::new(Mutex::new(conn)) })
+        Ok(SqlLightIndex {
+            conn: Arc::new(Mutex::new(conn)),
+            controller: Arc::new(Mutex::new(BackupSetController::new())),
+        })
     }
 
     fn insert_path<'conn>(&self, conn: &'conn Connection) -> CachedStatement<'conn> {
@@ -267,9 +274,10 @@ impl SqlLightIndex {
             let mut rows = select_path.query(&[&path])
                 .map_err(|e| IndexError::Fatal(format!("Select path failed: {}", e), None))?;
             while let Some(result_row) = rows.next() {
-                let result_row = result_row.map_err(|e| {
-                        IndexError::Fatal(format!("Failed to get result row: {}", e), None)
-                    })?;
+                let result_row =
+                    result_row.map_err(|e| {
+                            IndexError::Fatal(format!("Failed to get result row: {}", e), None)
+                        })?;
                 match result_row.get_checked(0) {
                     Ok(Value::Integer(i)) => return Ok(i),
                     Ok(n) => {
@@ -288,74 +296,7 @@ impl SqlLightIndex {
             .map_err(|e| IndexError::Fatal(format!("Insert query failed: {}", e), None))?)
     }
 
-    pub fn dump_records(&self) {
-        let conn = self.conn.lock().expect("conn lock");
-        let mut stmt = conn.prepare(DUMP_NODES_QUERY_SQL).unwrap();
-        let mut rows = stmt.query(&[]).unwrap();
-
-        while let Some(row) = rows.next() {
-            let row = row.unwrap();
-            let id = get_string_from_row(&row, "node_id");
-            let path = get_string_from_row(&row, "path");
-            let size = get_u64_from_row(&row, "size");
-            let mtime: u64 = get_u64_from_row(&row, "mtime");
-            let kind = get_string_from_row(&row, "kind");
-            let mode = get_u32_from_row(&row, "mode");
-            let deleted = get_bool_from_row(&row, "deleted");
-
-            println!("{} {} {} {} {} {} {}",
-                     id,
-                     path,
-                     size,
-                     mtime,
-                     kind,
-                     mode,
-                     deleted);
-
-        }
-    }
-}
-
-impl Index for SqlLightIndex {
-    fn visit_all_hashable(&mut self,
-                          f: &mut FnMut(Node) -> Result<(), IndexError>)
-                          -> Result<(), IndexError> {
-        trace!("Listing all hashable");
-
-        let conn = self.conn.lock().expect("conn lock");
-        let mut get_all_hashable = self.get_all_hashable(&conn);
-        let mut rows = get_all_hashable.query(&[])
-            .map_err(|e| IndexError::Fatal(format!("list_all_hashable failed: {}", e), None))?;
-
-        while let Some(row) = rows.next() {
-            let row =
-                row.map_err(|e| IndexError::Fatal(format!("Failed to get next row: {}", e), None))?;
-            f(row.try_into()?)?;
-        }
-
-        Ok(())
-    }
-
-    fn get(&mut self, path: String, from: Option<Timespec>) -> Result<Option<Node>, IndexError> {
-        let conn = self.conn.lock().expect("conn lock");
-        let mut get_latest = self.get_latest(&conn);
-        let mut get_from = self.get_from(&conn);
-        let mut rows = match from {
-            None => get_latest.query(&[&path]).expect("get_latest_query"),
-            Some(t) => get_from.query(&[&path, &t.sec]).expect("get_from_query"),
-        };
-        let row = rows.next();
-        if row.is_none() {
-            debug!("No record found for key {:?}", path);
-            return Ok(None);
-        }
-        let row = row.unwrap().unwrap();
-        let node: Node = row.try_into()?;
-        node.validate();
-        Ok(Some(node))
-    }
-
-    fn insert(&mut self, node: &Node) -> Result<(), IndexError> {
+    fn persist(&mut self, node: &Node) -> Result<(), IndexError> {
         debug!("Inserting {:?}", node);
         node.validate();
         // path_id, kind, mtime, size, mode, deleted, hash
@@ -434,13 +375,121 @@ impl Index for SqlLightIndex {
         Ok(())
     }
 
+    pub fn dump_records(&self) {
+        let conn = self.conn.lock().expect("conn lock");
+        let mut stmt = conn.prepare(DUMP_NODES_QUERY_SQL).unwrap();
+        let mut rows = stmt.query(&[]).unwrap();
+
+        while let Some(row) = rows.next() {
+            let row = row.unwrap();
+            let id = get_string_from_row(&row, "node_id");
+            let path = get_string_from_row(&row, "path");
+            let size = get_u64_from_row(&row, "size");
+            let mtime: u64 = get_u64_from_row(&row, "mtime");
+            let kind = get_string_from_row(&row, "kind");
+            let mode = get_u32_from_row(&row, "mode");
+            let deleted = get_bool_from_row(&row, "deleted");
+
+            println!("{} {} {} {} {} {} {}",
+                     id,
+                     path,
+                     size,
+                     mtime,
+                     kind,
+                     mode,
+                     deleted);
+
+        }
+    }
+}
+
+impl Index for SqlLightIndex {
+    fn visit_all_hashable(&mut self,
+                          like: String,
+                          f: &mut FnMut(Node) -> Result<(), IndexError>)
+                          -> Result<(), IndexError> {
+        trace!("Listing all hashable");
+
+        let like = {
+            if like.is_empty() {
+                "%".to_owned()
+            } else {
+                format!("%{}%", like)
+            }
+        };
+
+        let conn = self.conn.lock().expect("conn lock");
+        let mut get_all_hashable = self.get_all_hashable(&conn);
+        let mut rows = get_all_hashable.query(&[&like])
+            .map_err(|e| IndexError::Fatal(format!("list_all_hashable failed: {}", e), None))?;
+
+        while let Some(row) = rows.next() {
+            let row =
+                row.map_err(|e| IndexError::Fatal(format!("Failed to get next row: {}", e), None))?;
+            f(row.try_into()?)?;
+        }
+
+        Ok(())
+    }
+
+    fn insert(&mut self, node: Node) -> Result<(), IndexError> {
+        let mut ctrl = expect!(self.controller.lock(), "backup_set lock");
+        let mut backup_set = expect!(ctrl.get(), "backup set");
+        backup_set.insert(node);
+        Ok(())
+    }
+
+    fn get(&mut self, path: String, from: Option<Timespec>) -> Result<Option<Node>, IndexError> {
+        let conn = expect!(self.conn.lock(), "conn lock");
+        let mut get_latest = self.get_latest(&conn);
+        let mut get_from = self.get_from(&conn);
+        let mut rows = match from {
+            None => expect!(get_latest.query(&[&path]), "get_latest_query"),
+            Some(t) => expect!(get_from.query(&[&path, &t.sec]), "get_from_query"),
+        };
+        let row = rows.next();
+        if row.is_none() {
+            debug!("No record found for key {:?}", path);
+            return Ok(None);
+        }
+        let row = row.unwrap().unwrap();
+        let node: Node = row.try_into()?;
+        node.validate();
+        Ok(Some(node))
+    }
+
     fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, IndexError> {
         let conn = self.conn.lock().expect("conn lock");
         let mut stmt = self.insert_backup_set(&conn);
-        Ok(stmt.insert(&[&timestamp])
+        let index = stmt.insert(&[&timestamp])
             .map_err(|e| {
                 IndexError::Fatal(format!("Failed to create backup set: {}", e), None)
-            })? as u64)
+            })? as u64;
+
+        let mut ctrl = self.controller.lock().expect("backup_set lock");
+        ctrl.open(index);
+
+        info!("Opened backup set {}", index);
+
+        Ok(index)
+    }
+
+    fn close_backup_set(&mut self) -> Result<(), IndexError> {
+        let mut backup_set = {
+            let mut ctrl = self.controller.lock().expect("backup_set lock");
+            ctrl.flush()
+        };
+
+        info!("Closing backup set {}", backup_set.index());
+
+        // persist all nodes in backup_set
+        for node in backup_set.iter() {
+            self.persist(node)?;
+        }
+
+        info!("Backup set {} closed", backup_set.index());
+
+        Ok(())
     }
 
     fn dump(&self) -> Vec<Record> {
@@ -489,8 +538,7 @@ impl Index for SqlLightIndex {
                     query = self.list_from(&conn);
                     query.query(&[&path, &t.sec])
                 }
-            }
-            .map_err(|e| IndexError::Fatal(format!("list failed for {}: {}", path, e), None))?;
+            }.map_err(|e| IndexError::Fatal(format!("list failed for {}: {}", path, e), None))?;
 
         let mut v = vec![];
         while let Some(row_result) = rows.next() {
@@ -599,10 +647,10 @@ fn get_bool_from_row(row: &Row, name: &str) -> bool {
 mod test {
     extern crate env_logger;
 
-    use super::*;
+    use {Index, Node, NodeKind};
     use rusqlite::Connection;
+    use super::*;
     use time::Timespec;
-    use {Node, Index, NodeKind};
 
     fn index() -> SqlLightIndex {
         let _ = env_logger::init();
@@ -613,6 +661,8 @@ mod test {
     #[test]
     fn insert_file() {
         let mut index = index();
+        index.create_backup_set(0).expect("create_backup_set");
+
         let mtime = Timespec::new(10, 0);
         let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(5);
         n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
@@ -624,6 +674,8 @@ mod test {
     #[test]
     fn delete_file() {
         let mut index = index();
+        index.create_backup_set(0).expect("create_backup_set");
+
         let mtime = Timespec::new(10, 0);
         let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(5);
         n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
@@ -632,6 +684,8 @@ mod test {
         let mtime = n.mtime();
 
         index.insert(n.clone()).unwrap();
+        index.close_backup_set();
+
         let mut latest = index.get("a".to_string(), None).expect("ok").expect("some");
         latest.set_mtime(mtime.clone());
         assert_eq!(n, latest);
@@ -640,12 +694,14 @@ mod test {
     #[test]
     fn update_node() {
         let mut index = index();
+        index.create_backup_set(0).expect("create_backup_set");
+
         let n = Node::new_file("a", Timespec::new(10, 0), 1024, 500)
             .with_backup_set(5)
             .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
-        index.insert(n.clone()).unwrap();
+        index.insert(n).unwrap();
 
         let n = Node::new_file("a", Timespec::new(11, 0), 1024, 500)
             .with_backup_set(6)
@@ -657,12 +713,15 @@ mod test {
     #[test]
     fn get_latest_file() {
         let mut index = index();
+
         let mtime = Timespec::new(10, 0);
         let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(5);
         n.set_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
                         21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
-        index.insert(n).unwrap();
+        expect!(index.create_backup_set(0), "backup set");
+        expect!(index.insert(n), "insert");
+        expect!(index.close_backup_set(), "close backup set");
 
         let n = index.get("a".to_string(), None).unwrap();
         assert!(n.is_some());
@@ -677,9 +736,8 @@ mod test {
     #[test]
     fn get_file_from() {
         let mut index = index();
-        let bs_a = index.create_backup_set(600).expect("bs_a");
-        let bs_b = index.create_backup_set(1200).expect("bs_b");
 
+        let bs_a = index.create_backup_set(600).expect("bs_a");
         {
             let mtime = Timespec::new(10, 0);
             let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(bs_a);
@@ -687,7 +745,9 @@ mod test {
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
             index.insert(n).expect("insert");
         }
+        index.close_backup_set().expect("close backup_set");
 
+        let bs_b = index.create_backup_set(1200).expect("bs_b");
         {
             let mtime = Timespec::new(11, 0);
             let mut n = Node::new_file("a", mtime, 1025, 500).with_backup_set(bs_b);
@@ -695,6 +755,7 @@ mod test {
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
             index.insert(n).expect("insert");
         }
+        index.close_backup_set().expect("close backup_set");
 
         {
             let n = index.get("a".to_string(), Some(Timespec::new(500, 0))).expect("get");
@@ -723,9 +784,8 @@ mod test {
     #[test]
     fn list_from() {
         let mut index = index();
-        let bs_a = index.create_backup_set(600).expect("bs_a");
-        let bs_b = index.create_backup_set(1200).expect("bs_b");
 
+        let bs_a = index.create_backup_set(600).expect("bs_a");
         {
             let mtime = Timespec::new(10, 0);
             let mut n = Node::new_file("a", mtime, 1024, 500).with_backup_set(bs_a);
@@ -733,7 +793,9 @@ mod test {
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
             index.insert(n).expect("insert");
         }
+        index.close_backup_set().expect("close backup_set");
 
+        let bs_b = index.create_backup_set(1200).expect("bs_b");
         {
             let mtime = Timespec::new(11, 0);
             let mut n = Node::new_file("b", mtime, 1025, 500).with_backup_set(bs_b);
@@ -741,6 +803,7 @@ mod test {
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
             index.insert(n).expect("insert");
         }
+        index.close_backup_set().expect("close backup_set");
 
         {
             let list = index.list("".to_string(), Some(Timespec::new(500, 0))).expect("list");
@@ -771,10 +834,13 @@ mod test {
     #[test]
     fn get_latest_dir() {
         let mut index = index();
+
         let mtime = Timespec::new(10, 0);
         let n = Node::new_dir("a", mtime, 500).with_backup_set(5);
 
-        index.insert(n).unwrap();
+        expect!(index.create_backup_set(0), "backup set");
+        expect!(index.insert(n), "insert");
+        expect!(index.close_backup_set(), "close backup set");
 
         let n = index.get("a".to_string(), None).unwrap();
         assert!(n.is_some());
@@ -790,15 +856,19 @@ mod test {
     #[test]
     fn list() {
         let mut index = index();
+        expect!(index.create_backup_set(0), "backup set");
+
         let mtime = Timespec::new(10, 0);
         let dir = Node::new_dir("dir", mtime, 500).with_backup_set(5);
-        index.insert(dir).unwrap();
+        expect!(index.insert(dir), "insert");
 
         let file_a = Node::new_file("dir/a", mtime, 3, 500)
             .with_backup_set(5)
             .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
-        index.insert(file_a.clone()).unwrap();
+        expect!(index.insert(file_a.clone()), "insert");
+
+        expect!(index.close_backup_set(), "close backup set");
 
         let list = index.list("dir".to_string(), None).unwrap();
         let expected: Vec<Node> = vec![file_a];
@@ -812,7 +882,9 @@ mod test {
         let mtime = Timespec::new(10, 0);
         let n = Node::new_dir("a", mtime, 500).with_backup_set(5);
 
-        index.insert(n.clone()).unwrap();
+        expect!(index.create_backup_set(0), "backup set");
+        expect!(index.insert(n.clone()), "insert");
+        expect!(index.close_backup_set(), "close backup set");
 
         let list = index.list("".to_string(), None).unwrap();
 

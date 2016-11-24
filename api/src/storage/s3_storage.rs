@@ -1,27 +1,27 @@
+
+
+use {Node, Storage};
+
+use chrono::*;
+use crypto::hmac::Hmac;
+use crypto::mac::Mac;
+use crypto::sha2::Sha256;
+use engine::EngineConfig;
+use hasher::Hasher;
+use hyper;
+use hyper::Url;
+use hyper::client::*;
+use hyper::header::Headers;
+use hyper::method::Method;
+use regex::Regex;
+use rustc_serialize::base64;
+use rustc_serialize::base64::{CharacterSet, Newline, ToBase64};
+use rustc_serialize::hex::ToHex;
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::io::{Read, Write};
-
-use chrono::*;
-use crypto::hmac::Hmac;
-use crypto::sha2::Sha256;
-use crypto::mac::Mac;
-use hyper::client::*;
-use hyper::{Url, header};
-use hyper::header::Headers;
-use hyper::method::Method;
-use hyper::status::StatusCode;
-use hyper;
-use regex::Regex;
-use rustc_serialize::base64::{CharacterSet, ToBase64, Newline};
-use rustc_serialize::base64;
-use rustc_serialize::hex::ToHex;
-
-use {Node, Storage};
 use storage::SendRequest;
-use hasher::Hasher;
-use engine::EngineConfig;
 // use retry::retry_forever;
 
 pub struct S3Storage {
@@ -238,87 +238,114 @@ fn test_put_signature() {
     assert_eq!(headers, calcd_headers);
 }
 
-impl S3Storage {
-    fn key_exists(&self, dt: DateTime<UTC>, key: &str) -> Result<bool, String> {
+struct AmazonRequest {
+    access_key: String,
+    secret_key: String,
+    service: String,
+    method: Method,
+    url: Url,
+    region: String,
+    payload_hash: String,
+    headers: HashMap<String, String>,
+}
+
+impl AmazonRequest {
+    fn new(access_key: &str, secret_key: &str, service: &str, method: Method, url: Url) -> Self {
+        AmazonRequest {
+            access_key: access_key.into(),
+            secret_key: secret_key.into(),
+            service: service.into(),
+            method: method,
+            url: url,
+            region: "us-west-2".into(),
+            payload_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+            headers: HashMap::new(),
+        }
+    }
+    fn with_header(mut self, key: &str, value: &str) -> Self {
+        self.headers.insert(key.into(), value.into());
+        self
+    }
+    fn with_payload_hash(mut self, sha256: &str) -> Self {
+        self.payload_hash = sha256.into();
+        self
+    }
+    fn send<'a>(self,
+                client: &'a Client,
+                dt: DateTime<UTC>,
+                body: Option<Body<'a>>)
+                -> Result<Response, String> {
         let amzdate = dt.format("%Y%m%dT%H%M%SZ").to_string();
         let datestamp = dt.format("%Y%m%d").to_string();
 
-        let mut response_body;
-        let mut host = format!("{}.s3.amazonaws.com", self.bucket);
-        let mut canonical_uri = "/".to_string();
-        let mut canonical_querystring = format!("list-type=2&prefix={}", key).replace("/", "%2F");
+        let host = match self.url.host_str() {
+            None => return Err(format!("No host part")),
+            Some(h) => h.to_string(),
+        };
 
-        loop {
-            let sig = AwsSignature {
-                access_key: self.access_key.clone(),
-                secret_key: self.secret_key.clone(),
-                method: "GET".to_string(),
-                service: "s3".to_string(),
-                host: host.clone(),
-                region: "us-west-2".to_string(),
-                amzdate: amzdate.clone(),
-                datestamp: datestamp.clone(),
-                canonical_uri: canonical_uri.clone(),
-                canonical_querystring: canonical_querystring.clone(),
-                payload_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-                    .to_string(),
-                headers: HashMap::new(),
-            };
-            let headers = sig.signed_headers();
+        let canonical_uri = self.url.path().to_string();
 
-            let request_url = format!("https://{}?{}", sig.host, sig.canonical_querystring);
+        let canonical_querystring = match self.url.query() {
+            None => "".to_string(),
+            Some(s) => s.to_string(),
+        };
 
-            let mut res = self.client
-                .get(&request_url)
-                .headers(headers.clone())
-                .send()
-                .map_err(|e| {
-                    format!("Checking S3 key {} failed: {}. URL: {:?}, Headers: {:?}",
-                            key,
-                            e,
-                            request_url,
-                            headers)
-                })?;
+        let sig = AwsSignature {
+            access_key: self.access_key.clone(),
+            secret_key: self.secret_key.clone(),
+            method: self.method.as_ref().into(),
+            service: self.service.clone(),
+            host: host.clone(),
+            region: self.region.clone(),
+            amzdate: amzdate.clone(),
+            datestamp: datestamp.clone(),
+            canonical_uri: canonical_uri.clone(),
+            canonical_querystring: canonical_querystring.clone(),
+            payload_hash: self.payload_hash.clone(),
+            headers: self.headers.clone(),
+        };
+        let headers = sig.signed_headers();
 
-            debug!("{:?}", res);
-            response_body = String::new();
-            res.read_to_string(&mut response_body).expect("read_to_string");
-            debug!("List Result:\n{:?}", response_body);
+        let mut res = client.request(self.method.clone(), self.url.clone())
+            .headers(headers.clone());
+        match body {
+            None => (),
+            Some(body) => res = res.body(body),
+        }
+        let res = res.send()
+            .map_err(|e| {
+                format!("AWS request failed: {}. URL: {:?}, Headers: {:?}",
+                        e,
+                        self.url,
+                        headers)
+            })?;
+        debug!("{:?}", res);
+        Ok(res)
+    }
+}
 
-            if res.status == hyper::Ok {
-                break;
-            } else if res.status == StatusCode::TemporaryRedirect {
-                let loc: Option<&header::Location> = res.headers.get();
-                let loc = match loc {
-                    None => return Err(format!("No Location header on redirect")),
-                    Some(l) => l,
-                };
-                debug!("Location header for redirect: {:?}", loc);
+impl S3Storage {
+    fn key_exists(&self, dt: DateTime<UTC>, key: &str) -> Result<bool, String> {
+        let host = format!("{}.s3.amazonaws.com", self.bucket);
+        let query = format!("list-type=2&prefix={}", key).replace("/", "%2F");
+        let url_str = format!("https://{}?{}", host, query);
 
-                let url = match Url::parse(&loc.0) {
-                    Err(e) => return Err(format!("Failed to parse URL: {}", e)),
-                    Ok(u) => u,
-                };
+        let url = url_str.parse().expect("URL");
+        let aws_req =
+            AmazonRequest::new(&self.access_key, &self.secret_key, "s3", Method::Get, url);
+        let mut result = aws_req.send(&self.client, dt.clone(), None)
+            .map_err(|e| format!("Failed to check S3 key exists: {}", e))?;
 
-                host = match url.host_str() {
-                    None => return Err(format!("No host part on redirect")),
-                    Some(h) => h.into(),
-                };
+        let mut response_body = String::new();
+        result.read_to_string(&mut response_body).expect("read_to_string");
+        debug!("List Result:\n{:?}", response_body);
 
-                canonical_uri = url.path().into();
-
-                canonical_querystring = match url.query() {
-                    None => "".into(),
-                    Some(s) => s.into(),
-                };
-
-            } else {
-                return Err(format!("Failed to check key exists: {}. {}\n{}",
-                                   res.status,
-                                   request_url,
-                                   response_body)
-                    .into());
-            }
+        if result.status != hyper::Ok {
+            return Err(format!("Failed to check key exists: {}. {}\n{}",
+                               result.status,
+                               url_str,
+                               response_body)
+                .into());
         }
 
         lazy_static! {
@@ -346,78 +373,58 @@ impl Storage for S3Storage {
 
         debug!("Using s3://{}/{}", self.bucket, key);
 
-        let client = Client::new();
-
         if self.key_exists(UTC::now(), &key)? {
-            info!("Storage already contains {}", key);
+            debug!("Storage already contains {}", key);
             return Ok(());
         }
 
-        info!("Uploading s3://{}/{} ({} bytes)", self.bucket, key, size);
+        debug!("Uploading s3://{}/{} ({} bytes)", self.bucket, key, size);
+        let dt: DateTime<UTC> = UTC::now();
 
-        {
-            let mut headers = HashMap::new();
-            headers.insert("x-amz-storage-class".to_string(), "STANDARD_IA".to_string());
-            headers.insert("Content-MD5".to_string(),
-                           md5.to_base64(base64::Config {
-                               char_set: CharacterSet::Standard,
-                               newline: Newline::LF,
-                               pad: true,
-                               line_length: None,
-                           }));
+        let host = format!("{}.s3.amazonaws.com", self.bucket);
+        let url_str = format!("https://{}/{}", host, key);
+        let url = url_str.parse().expect("URL");
+        let aws_req =
+            AmazonRequest::new(&self.access_key, &self.secret_key, "s3", Method::Put, url)
+                .with_header("x-amz-storage-clas", "STANDARD_IA")
+                .with_header("Content-MD5",
+                             &md5.to_base64(base64::Config {
+                                 char_set: CharacterSet::Standard,
+                                 newline: Newline::LF,
+                                 pad: true,
+                                 line_length: None,
+                             }))
+                .with_payload_hash(&hash.to_hex());
+        let mut result = aws_req.send(&self.client,
+                  dt.clone(),
+                  Some(Body::SizedBody(reader, size)))
+            .map_err(|e| format!("Failed to upload key to S3: {}", e))?;
 
-            let dt: DateTime<UTC> = UTC::now();
-            let amzdate = dt.format("%Y%m%dT%H%M%SZ").to_string();
-            let datestamp = dt.format("%Y%m%d").to_string();
-
-            let sig = AwsSignature {
-                access_key: self.access_key.clone(),
-                secret_key: self.secret_key.clone(),
-                method: "PUT".to_string(),
-                service: "s3".to_string(),
-                host: format!("{}.s3.amazonaws.com", self.bucket),
-                region: "us-west-2".to_string(),
-                amzdate: amzdate,
-                datestamp: datestamp,
-                canonical_uri: format!("/{}", key),
-                canonical_querystring: "".to_string(),
-                payload_hash: hash.to_hex(),
-                headers: headers,
-            };
-            let headers = sig.signed_headers();
-
-            let request_url = format!("https://{}/{}", sig.host, key);
-
-            let mut res = client.request(Method::Put, &request_url)
-                .headers(headers)
-                .body(Body::SizedBody(reader, size))
-                .send()
-                .map_err(|e| format!("Upload failed: {}", e))?;
-
-            debug!("{:?}", res);
-
+        if result.status != hyper::Ok {
             let mut response_body = String::new();
-            res.read_to_string(&mut response_body).expect("read_to_string");
-            debug!("Upload Result:\n{:?}", response_body);
-
-            if res.status != hyper::Ok {
-                return Err(format!("Upload failed with {}", res.status).into());
-            }
+            result.read_to_string(&mut response_body).expect("read_to_string");
+            warn!("Failed upload result body:\n{:?}", response_body);
+            return Err(format!("Failed failed to upload key: {}. {}\n{}",
+                               result.status,
+                               url_str,
+                               response_body)
+                .into());
         }
+
         Ok(())
     }
     fn retrieve(&self, _hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>> {
         use std::io::Cursor;
         Ok(Some(box Cursor::new(vec![])))
     }
-    fn verify(&self, n: Node) -> Result<Option<Node>, Box<Error>> {
+    fn verify(&self, n: Node) -> Result<(Node, bool), Box<Error>> {
         let hex = n.hash().as_ref().expect("hash").to_hex();
         let key = self.key_from_sha256(&hex);
         if self.key_exists(UTC::now(), &key)? {
             info!("{} OK", key);
-            Ok(None)
+            Ok((n, true))
         } else {
-            Ok(Some(n))
+            Ok((n, false))
         }
     }
 }

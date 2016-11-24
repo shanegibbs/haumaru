@@ -5,7 +5,6 @@ Successor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), 
 ## TODO
 
 ### Primary
-* Stage Nodes to disk before inserting in DB. Only insert once backup run is complete.
 * S3 upload backup_set records
 * Full integration testing
 
@@ -22,6 +21,7 @@ Successor to [backitup](https://github.com/shanegibbs/backitup) (Jul 19, 2015), 
 * Remove un-indexed hashes from store.
 
 ## Done
+* ~~Stage Nodes to disk before inserting in DB. Only insert once backup run is complete.~~
 * ~~S3 upload hashes~~
 * ~~Refactor `Storage.send` to `Storage.send(Read, &[u8])`~~
 * ~~Max file size option~~
@@ -48,7 +48,9 @@ Single thread IO read.
 Multi thread hashing
 Callback on complete/error
 
-#- Need sending state?
-- Trait for parallel sends. On/off and num.
+# Linux
 
-How do we know when all queues are drained?
+```
+cat /proc/sys/fs/inotify/max_user_watches
+sudo sysctl fs.inotify.max_user_watches=524288
+```

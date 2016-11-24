@@ -1,20 +1,24 @@
+
+use {Node, Record};
 use std::error::Error;
 use std::fmt;
 use time::Timespec;
-use {Node, Record};
 
 mod sql_light_index;
+mod backup_set;
+pub use index::backup_set::{BackupSet, BackupSetController};
 pub use index::sql_light_index::*;
 
 pub trait Index {
     fn get(&mut self, path: String, from: Option<Timespec>) -> Result<Option<Node>, IndexError>;
     fn list(&mut self, path: String, from: Option<Timespec>) -> Result<Vec<Node>, IndexError>;
     fn visit_all_hashable(&mut self,
+                          like: String,
                           f: &mut FnMut(Node) -> Result<(), IndexError>)
                           -> Result<(), IndexError>;
-    fn insert(&mut self, &Node) -> Result<(), IndexError>;
+    fn insert(&mut self, Node) -> Result<(), IndexError>;
     fn create_backup_set(&mut self, timestamp: i64) -> Result<u64, IndexError>;
-    // fn backup_set_records(&mut self, backup_set: u64);
+    fn close_backup_set(&mut self) -> Result<(), IndexError>;
 
     fn dump(&self) -> Vec<Record>;
 }
