@@ -1,21 +1,32 @@
 extern crate env_logger;
 
-use std::io::Cursor;
-use std::collections::HashSet;
+use {Engine, EngineConfig, Index, Node};
+use engine::DefaultEngine;
+use index::SqlLightIndex;
 use rusqlite::Connection;
+use std::collections::HashSet;
+use std::fs::{create_dir_all, remove_dir_all};
+use std::io;
+use std::io::Cursor;
+use storage::LocalStorage;
 use time::Timespec;
 
-use index::SqlLightIndex;
-use storage::LocalStorage;
-use engine::DefaultEngine;
-use {Node, Index, Engine, EngineConfig};
-
-fn test_list(key: &str, f: &Fn(&mut Index)) -> String {
+fn test_list(test_name: &str, key: &str, f: &Fn(&mut Index)) -> String {
     let _ = env_logger::init();
+    let dir = format!("target/test/engine-{}", test_name);
+
+    remove_dir_all(&dir).unwrap_or_else(|e| {
+        match e.kind() {
+            io::ErrorKind::NotFound => (),
+            _ => panic!("remove_dir_all: {}", e),
+        }
+    });
+    create_dir_all(&dir).unwrap_or_else(|e| panic!("create_dir_all: {}", e));
 
     let conn = Connection::open_in_memory().expect("conn");
     let mut index = SqlLightIndex::new(conn).expect("index");
-    let config = EngineConfig::new_detached("target/test/list_file");
+    let config = EngineConfig::new_detached(&dir);
+
     let store = LocalStorage::new(&config).expect("store");
 
     expect!(index.create_backup_set(0), "create backup set");
@@ -30,13 +41,14 @@ fn test_list(key: &str, f: &Fn(&mut Index)) -> String {
 
 #[test]
 fn list_root_empty() {
-    let output = test_list("", &|_index| {});
+    let output = test_list("list_root_empty", "", &|_index| {});
     assert_eq!("", output.as_str());
 }
 
 #[test]
 fn list_root() {
-    let output = test_list("",
+    let output = test_list("list_root",
+                           "",
                            &|index| {
         index.insert(Node::new_file("a", Timespec::new(10, 0), 1024, 500)
                 .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
@@ -49,7 +61,8 @@ fn list_root() {
 
 #[test]
 fn list_file() {
-    let output = test_list("a",
+    let output = test_list("list_file",
+                           "a",
                            &|index| {
         index.insert(Node::new_file("a", Timespec::new(10, 0), 1024, 500)
                 .with_hash(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
@@ -64,7 +77,8 @@ fn list_file() {
 
 #[test]
 fn list_dir() {
-    let output = test_list("a",
+    let output = test_list("list_dir",
+                           "a",
                            &|index| {
         index.insert(Node::new_dir("a", Timespec::new(10, 0), 500).with_backup_set(5))
             .expect("insert dir");
@@ -82,7 +96,8 @@ fn list_dir() {
 
 #[test]
 fn list_empty_dir() {
-    let output = test_list("a",
+    let output = test_list("list_empty_dir",
+                           "a",
                            &|index| {
                                index.insert(Node::new_dir("a", Timespec::new(10, 0), 500)
                                        .with_backup_set(5))
