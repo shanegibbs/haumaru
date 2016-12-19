@@ -4,20 +4,19 @@ extern crate env_logger;
 extern crate haumaru_api;
 extern crate rusqlite;
 
-use std::fs::{File, remove_file, create_dir_all, remove_dir, remove_dir_all};
-use rusqlite::Connection;
-use std::path::PathBuf;
-use std::collections::HashSet;
-use std::io::{Read, Write, Cursor};
-use log::{LogRecord, LogLevelFilter, LogLevel};
 use env_logger::LogBuilder;
-use std::env;
-
-use haumaru_api::{Engine, Index, Record, NodeKind};
+use haumaru_api::{Engine, Index, NodeKind, Record};
 use haumaru_api::engine::*;
 use haumaru_api::filesystem::Change;
-use haumaru_api::storage::*;
 use haumaru_api::index::SqlLightIndex;
+use haumaru_api::storage::*;
+use log::{LogLevel, LogLevelFilter, LogRecord};
+use rusqlite::Connection;
+use std::collections::HashSet;
+use std::env;
+use std::fs::{File, create_dir_all, remove_dir, remove_dir_all, remove_file};
+use std::io::{Cursor, Read, Write};
+use std::path::PathBuf;
 
 fn setup_logging(default_log_str: &str) {
 
@@ -80,7 +79,7 @@ fn test_change<'a, F>(name: &str, f: F) -> Vec<Record>
     files_path.push("files");
     create_dir_all(&files_path).unwrap();
 
-    let config = EngineConfig::new(working_path.to_str().unwrap().to_string())
+    let config = EngineConfig::new(working_path.to_str().unwrap())
         .with_path(files_path.to_str().unwrap().to_string());
 
     let store = LocalStorage::new(&config).unwrap();
@@ -115,7 +114,7 @@ fn process_change_transient() {
         let mut filename = path.clone();
         filename.push("a");
         let change = Change::new(filename);
-        engine.process_change(3, change).unwrap();
+        engine.process_changes(3, vec![change]).unwrap();
     });
     let v: Vec<Record> = vec![];
     assert_eq!(v, dump);
@@ -129,7 +128,7 @@ fn process_change_new_file() {
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created {:?}", filename);
 
-        engine.process_change(3, Change::new(filename)).unwrap();
+        engine.process_changes(3, vec![Change::new(filename)]).unwrap();
     });
 
     let v: Vec<Record> = vec![Record::new(NodeKind::File, "a".into(), 3, 420)];
@@ -141,17 +140,10 @@ fn process_change_update_file() {
     let name = "process_change_update_file";
 
     let dump = test_change(name, |engine, path| {
-        {
-            let filename = write_file(path.clone(), "a", "abc");
-            debug!("Created {:?}", filename);
-            engine.process_change(3, Change::new(filename)).unwrap();
-        }
-
-        {
-            let filename = write_file(path.clone(), "a", "1234");
-            debug!("Created {:?}", filename);
-            engine.process_change(3, Change::new(filename)).unwrap();
-        }
+        engine.process_changes(3, vec![Change::new(write_file(path.clone(), "a", "abc"))])
+            .unwrap();
+        engine.process_changes(4, vec![Change::new(write_file(path.clone(), "a", "1234"))])
+            .unwrap();
     });
 
     let v: Vec<Record> = vec![Record::new(NodeKind::File, "a".into(), 3, 420),
@@ -167,12 +159,11 @@ fn process_change_delete_file() {
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created {:?}", filename);
 
-        engine.process_change(3, Change::new(filename.clone())).unwrap();
-        engine.wait_for_queue_drain();
+        engine.process_changes(3, vec![Change::new(filename.clone())]).unwrap();
 
         remove_file(filename.clone()).unwrap();
         debug!("Deleted {:?}", filename);
-        engine.process_change(3, Change::new(filename)).unwrap();
+        engine.process_changes(4, vec![Change::new(filename)]).unwrap();
 
     });
 
@@ -195,15 +186,14 @@ fn process_change_skip_dir_update() {
 
         // TODO
 
-        engine.process_change(3, Change::new(subdir.clone())).unwrap();
-        engine.wait_for_queue_drain();
+        engine.process_changes(3, vec![Change::new(subdir.clone())]).unwrap();
 
         let filename = write_file(subdir.clone(), "a", "abc");
         debug!("Created {:?}", filename);
 
-        engine.process_change(4, Change::new(filename.clone())).unwrap();
-        engine.process_change(4, Change::new(subdir.clone())).unwrap();
-
+        engine.process_changes(4,
+                             vec![Change::new(filename.clone()), Change::new(subdir.clone())])
+            .unwrap();
     });
 
     let v: Vec<Record> = vec![Record::new(NodeKind::Dir, "subdir".into(), 0, 493),
@@ -219,15 +209,14 @@ fn process_change_file_then_dir() {
 
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created {:?}", filename);
-        engine.process_change(3, Change::new(filename.clone())).unwrap();
-        engine.wait_for_queue_drain();
+        engine.process_changes(3, vec![Change::new(filename.clone())]).unwrap();
 
         remove_file(filename.clone()).unwrap();
         debug!("Deleted {:?}", filename);
 
         create_dir_all(filename.clone()).unwrap();
         debug!("Created {:?}", filename);
-        engine.process_change(4, Change::new(filename.clone())).unwrap();
+        engine.process_changes(4, vec![Change::new(filename.clone())]).unwrap();
     });
 
     let v: Vec<Record> = vec![Record::new(NodeKind::File, "a".into(), 3, 420),
@@ -245,15 +234,16 @@ fn process_change_dir_then_file() {
         n.push("a");
         create_dir_all(n.clone()).unwrap();
         debug!("Created Dir {:?}", n);
-        engine.process_change(3, Change::new(n.clone())).unwrap();
-        engine.wait_for_queue_drain();
+        engine.process_changes(3, vec![Change::new(n.clone())])
+            .unwrap();
 
         remove_dir(n.clone()).unwrap();
         debug!("Deleted Dir {:?}", n);
 
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created File {:?}", filename);
-        engine.process_change(4, Change::new(filename.clone())).unwrap();
+        engine.process_changes(4, vec![Change::new(filename.clone())])
+            .unwrap();
     });
 
     let v: Vec<Record> = vec![Record::new(NodeKind::Dir, "a".into(), 0, 493),
@@ -266,22 +256,17 @@ fn process_change_deleted_recreated_file() {
     let name = "process_change_deleted_recreated_file";
 
     let dump = test_change(name, |engine, path| {
-
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created File {:?}", filename);
-        engine.process_change(3, Change::new(filename.clone())).unwrap();
-        engine.wait_for_queue_drain();
+        engine.process_changes(3, vec![Change::new(filename.clone())]).unwrap();
 
         remove_file(filename.clone()).unwrap();
         debug!("Deleted {:?}", filename);
-        engine.process_change(4, Change::new(filename.clone())).unwrap();
-        engine.wait_for_queue_drain();
+        engine.process_changes(4, vec![Change::new(filename.clone())]).unwrap();
 
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created File {:?}", filename);
-        engine.process_change(5, Change::new(filename.clone())).unwrap();
-        engine.wait_for_queue_drain();
-
+        engine.process_changes(5, vec![Change::new(filename.clone())]).unwrap();
     });
 
     let v: Vec<Record> = vec![Record::new(NodeKind::File, "a".into(), 3, 420),
@@ -299,7 +284,7 @@ fn scan_new_file() {
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created {:?}", filename);
 
-        engine.scan(5).unwrap();
+        engine.scan_as_backup_set(5).unwrap();
     });
 
     let v: Vec<Record> = vec![Record::new(NodeKind::File, "a".into(), 3, 420)];
@@ -317,7 +302,7 @@ fn scan_new_dir() {
         create_dir_all(n.clone()).unwrap();
         debug!("Created {:?}", n);
 
-        engine.scan(5).unwrap();
+        engine.scan_as_backup_set(5).unwrap();
     });
 
     let v: Vec<Record> = vec![Record::new(NodeKind::Dir, "a".into(), 0, 493)];
@@ -332,11 +317,11 @@ fn scan_updated_file() {
 
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created {:?}", filename);
-        engine.scan(5).unwrap();
+        engine.scan_as_backup_set(5).unwrap();
 
         let filename = write_file(path.clone(), "a", "abcd");
         debug!("Created {:?}", filename);
-        engine.scan(6).unwrap();
+        engine.scan_as_backup_set(6).unwrap();
 
     });
 
@@ -353,11 +338,11 @@ fn scan_delete_last_file() {
 
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created {:?}", filename);
-        engine.scan(5).unwrap();
+        engine.scan_as_backup_set(5).unwrap();
 
         remove_file(filename.clone()).unwrap();
         debug!("Deleted {:?}", filename);
-        engine.scan(6).unwrap();
+        engine.scan_as_backup_set(6).unwrap();
 
     });
 
@@ -378,11 +363,11 @@ fn scan_deleted_file() {
         let filename = write_file(path.clone(), "b", "abc");
         debug!("Created {:?}", filename);
 
-        engine.scan(5).unwrap();
+        engine.scan_as_backup_set(5).unwrap();
 
         remove_file(filename.clone()).unwrap();
         debug!("Deleted {:?}", filename);
-        engine.scan(6).unwrap();
+        engine.scan_as_backup_set(6).unwrap();
 
     });
 
@@ -399,7 +384,7 @@ fn restore_file_from_root() {
         let filename = write_file(path.clone(), "a", "abc");
         debug!("Created {:?}", filename);
 
-        engine.scan(5).unwrap();
+        engine.scan_as_backup_set(5).unwrap();
 
         let mut restore_path = path.clone();
         restore_path.push("restore");
@@ -431,7 +416,7 @@ fn restore_file_from_dir() {
         let filename = write_file(dir.clone(), "a", "abc");
         debug!("Created {:?}", filename);
 
-        engine.scan(5).unwrap();
+        engine.scan_as_backup_set(5).unwrap();
 
         let mut restore_path = path.clone();
         restore_path.push("restore");
@@ -463,7 +448,7 @@ fn restore_dir_from_root() {
         let filename = write_file(dir.clone(), "a", "abc");
         debug!("Created {:?}", filename);
 
-        engine.scan(5).unwrap();
+        engine.scan_as_backup_set(5).unwrap();
 
         let mut restore_path = path.clone();
         restore_path.push("restore");
@@ -497,7 +482,7 @@ fn restore_dir_from_dir() {
         let filename = write_file(dir.clone(), "a", "abc");
         debug!("Created {:?}", filename);
 
-        engine.scan(5).unwrap();
+        engine.scan_as_backup_set(5).unwrap();
 
         let mut restore_path = path.clone();
         restore_path.push("restore");
@@ -537,7 +522,7 @@ fn full_restore() {
         let filename = write_file(dir.clone(), "c", "ghi");
         debug!("Created {:?}", filename);
 
-        engine.scan(5).unwrap();
+        engine.scan_as_backup_set(5).unwrap();
 
         let mut restore_path = path.clone();
         restore_path.push("restore");

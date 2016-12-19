@@ -1,6 +1,5 @@
 #![deny(warnings)]
-#![feature(question_mark, box_syntax, try_from, custom_derive, plugin)]
-#![plugin(serde_macros)]
+#![feature(box_syntax, try_from, custom_derive, plugin, proc_macro)]
 #[macro_use]
 extern crate log;
 #[macro_use]
@@ -13,12 +12,17 @@ extern crate crypto;
 extern crate rustc_serialize;
 extern crate regex;
 extern crate serde;
+#[macro_use]
+extern crate serde_derive;
 extern crate serde_yaml;
 extern crate hyper;
 extern crate threadpool;
 
 #[cfg(test)]
 extern crate env_logger;
+
+#[macro_use]
+mod expect;
 
 pub mod filesystem;
 pub mod engine;
@@ -31,34 +35,34 @@ mod hasher;
 mod retry;
 mod queue;
 
-pub use config::{Config, AsConfig};
+pub use config::{AsConfig, Config};
+
+use engine::DefaultEngine;
 pub use engine::EngineConfig;
+use filesystem::Change;
+
+pub use index::Index;
+use index::SqlLightIndex;
 pub use node::{Node, NodeKind};
+use rusqlite::Connection;
+use rusqlite::Error as SqliteError;
+use std::borrow::Borrow;
+use std::collections::HashSet;
 
 use std::convert::TryInto;
 use std::error::Error;
-use std::path::PathBuf;
-use std::collections::HashSet;
-use std::fs::create_dir_all;
-use rusqlite::Error as SqliteError;
-use rusqlite::Connection;
 use std::fmt;
-use std::borrow::Borrow;
+use std::fs::create_dir_all;
 use std::io::{Read, Write};
-use time::Timespec;
-
-use engine::DefaultEngine;
-use filesystem::Change;
-use index::SqlLightIndex;
+use std::path::PathBuf;
 // use storage::LocalStorage;
 use storage::SendRequest;
-
-pub use index::Index;
+use time::Timespec;
 
 pub trait Engine {
     fn run(&mut self) -> Result<(), Box<Error>>;
-    fn process_change(&mut self, backup_set: u64, change: Change) -> Result<(), Box<Error>>;
-    fn verify_store(&mut self) -> Result<(), Box<Error>>;
+    fn process_changes(&mut self, for_time: i64, changes: Vec<Change>) -> Result<(), Box<Error>>;
+    fn verify_store(&mut self, like: String) -> Result<(), Box<Error>>;
     fn restore(&mut self,
                key: &str,
                from: Option<Timespec>,
@@ -74,7 +78,7 @@ pub trait Engine {
 pub trait Storage: Send + Clone {
     fn send(&self, req: &mut SendRequest) -> Result<(), Box<Error>>;
     fn retrieve(&self, hash: &[u8]) -> Result<Option<Box<Read>>, Box<Error>>;
-    fn verify(&self, Node) -> Result<Option<Node>, Box<Error>>;
+    fn verify(&self, Node) -> Result<(Node, bool), Box<Error>>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,6 +110,7 @@ impl Record {
 pub enum HaumaruError {
     SqlLite(String, SqliteError),
     Config(Box<Error>),
+    ParseConfig(Box<Error>),
     Index(Box<Error>),
     Storage(Box<Error>),
     Engine(Box<Error>),
@@ -115,7 +120,8 @@ pub enum HaumaruError {
 impl Error for HaumaruError {
     fn description(&self) -> &str {
         match *self {
-            HaumaruError::Config(ref _e) => "Failed to load config",
+            HaumaruError::Config(ref _e) => "Config error",
+            HaumaruError::ParseConfig(ref _e) => "Config parse error",
             HaumaruError::SqlLite(ref _s, ref _e) => "SqlLite error",
             HaumaruError::Index(ref _e) => "Index error",
             HaumaruError::Storage(ref _e) => "Storage error",
@@ -127,6 +133,7 @@ impl Error for HaumaruError {
     fn cause(&self) -> Option<&Error> {
         match *self {
             HaumaruError::Config(ref e) => Some(e.borrow()),
+            HaumaruError::ParseConfig(ref e) => Some(e.borrow()),
             HaumaruError::SqlLite(ref _s, ref e) => Some(e),
             HaumaruError::Index(ref e) => Some(e.borrow()),
             HaumaruError::Storage(ref e) => Some(e.borrow()),
@@ -139,7 +146,8 @@ impl Error for HaumaruError {
 impl fmt::Display for HaumaruError {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match *self {
-            HaumaruError::Config(ref e) => write!(f, "Failed to load config file: {}", e)?,
+            HaumaruError::Config(ref e) => write!(f, "Config error: {}", e)?,
+            HaumaruError::ParseConfig(ref e) => write!(f, "Parse error: {}", e)?,
             HaumaruError::SqlLite(ref s, ref e) => write!(f, "{}: {}", s, e)?,
             HaumaruError::Index(ref e) => write!(f, "{}", e)?,
             HaumaruError::Storage(ref e) => write!(f, "{}", e)?,
@@ -170,9 +178,9 @@ fn split_key(key: &str) -> (String, Option<Timespec>) {
 
     (key_str.to_string(),
      Some(Timespec {
-        sec: unix_ts,
-        nsec: 0,
-    }))
+         sec: unix_ts,
+         nsec: 0,
+     }))
 }
 
 #[test]
@@ -201,10 +209,9 @@ fn test_split_key() {
 
 }
 
-fn build_storage(config: EngineConfig) -> storage::S3Storage {
-    // LocalStorage::new(&config)
-    //     .map_err(|e| HaumaruError::Storage(box e))?;
-    storage::S3Storage::new(config)
+fn build_storage(config: EngineConfig) -> storage::LocalStorage {
+    storage::LocalStorage::new(&config).expect("build storage")
+    // storage::S3Storage::new(config)
 }
 
 fn build_index(config: EngineConfig) -> Result<SqlLightIndex, HaumaruError> {
@@ -226,11 +233,11 @@ fn setup_and_run<F>(config: EngineConfig, mut f: F) -> Result<(), HaumaruError>
     let mut excludes = HashSet::new();
     excludes.insert(config.abs_working().to_str().unwrap().to_string());
 
-    let mut engine = DefaultEngine::new(config.clone(),
-                                        excludes,
-                                        build_index(config.clone())?,
-                                        build_storage(config))
-        .map_err(|e| HaumaruError::Engine(e))?;
+    let mut engine =
+        DefaultEngine::new(config.clone(),
+                           excludes,
+                           build_index(config.clone())?,
+                           build_storage(config)).map_err(|e| HaumaruError::Engine(e))?;
 
     f(&mut engine)
 }
@@ -240,10 +247,10 @@ pub fn run(user_config: Config) -> Result<(), HaumaruError> {
     setup_and_run(config, |eng| eng.run().map_err(|e| HaumaruError::Engine(e)))
 }
 
-pub fn verify(user_config: Config) -> Result<(), HaumaruError> {
+pub fn verify(user_config: Config, like: String) -> Result<(), HaumaruError> {
     let config: EngineConfig = user_config.try_into()?;
     setup_and_run(config,
-                  |eng| eng.verify_store().map_err(|e| HaumaruError::Engine(e)))
+                  |eng| eng.verify_store(like.clone()).map_err(|e| HaumaruError::Engine(e)))
 }
 
 pub fn restore(user_config: Config, key: &str, target: &str) -> Result<(), HaumaruError> {
@@ -263,8 +270,7 @@ pub fn list(user_config: Config, key: &str) -> Result<(), HaumaruError> {
 
     let mut cur = Cursor::new(Vec::new());
     setup_and_run(config,
-                  |eng| eng.list(&key, from, &mut cur).map_err(|e| HaumaruError::Engine(e)))
-        ?;
+                  |eng| eng.list(&key, from, &mut cur).map_err(|e| HaumaruError::Engine(e)))?;
     let content = String::from_utf8(cur.into_inner()).expect("from_utf8");
     println!("{}", content);
     Ok(())
@@ -277,8 +283,7 @@ pub fn dump() -> Result<(), HaumaruError> {
     db_path.push("haumaru.idx");
 
     let conn = Connection::open_with_flags(&db_path, rusqlite::SQLITE_OPEN_READ_ONLY).unwrap();
-    let index = SqlLightIndex::new(conn)
-        .map_err(|e| HaumaruError::Index(box e))?;
+    let index = SqlLightIndex::new(conn).map_err(|e| HaumaruError::Index(box e))?;
 
     index.dump_records();
 

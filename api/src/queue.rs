@@ -140,7 +140,7 @@ impl<T> QueueItem<T> {
             success: false,
         }
     }
-    pub fn success(&mut self) -> T {
+    pub fn success(mut self) -> T {
         self.success = true;
         self.t.take().expect("Already taken")
     }
@@ -193,8 +193,8 @@ mod test {
         {
             queue.push(0);
             assert_eq!(1, queue.len());
-            let mut x = queue.pop();
-            assert_eq!(0, x.take());
+            let x = queue.pop();
+            assert_eq!(&0, x.as_ref());
             x.success();
         }
         assert_eq!(0, queue.in_progress());
@@ -211,7 +211,7 @@ mod test {
         }
         for _i in 0..10 {
             {
-                let mut x = queue.pop();
+                let x = queue.pop();
                 x.success();
             }
             assert_eq!(0, queue.in_progress());
@@ -240,7 +240,7 @@ mod test {
             let mut queue = queue.clone();
             thread_pop = thread::spawn(move || {
                 for _i in 0..1000 {
-                    let mut x = queue.pop();
+                    let x = queue.pop();
                     x.success();
                 }
             });
@@ -269,7 +269,7 @@ mod test {
                 let mut queue = queue.clone();
                 thread::spawn(move || {
                     for _i in 0..1000 {
-                        let mut x = queue.pop();
+                        let x = queue.pop();
                         x.success();
                     }
                 });
@@ -313,7 +313,7 @@ mod test {
             thread_pop = thread::spawn(move || {
                 for _i in 0..1000 {
                     {
-                        let mut x = queue.pop();
+                        let x = queue.pop();
                         x.success();
                     }
                     assert!(queue.len() <= 2);

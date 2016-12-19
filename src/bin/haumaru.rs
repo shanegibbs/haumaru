@@ -1,14 +1,14 @@
 #![deny(warnings)]
-#![feature(question_mark)]
 #[macro_use]
 extern crate log;
 extern crate haumaru;
 extern crate haumaru_api;
 extern crate clap;
 
+use clap::{App, AppSettings, Arg, SubCommand};
 use std::error::Error;
-use clap::{Arg, App, SubCommand};
 use std::fmt;
+use std::path;
 
 #[derive(Debug)]
 enum CliError {
@@ -64,6 +64,7 @@ fn app<'a, 'b>(default_path: &'a str,
                 .required(true)))
         .subcommand(SubCommand::with_name("verify")
             .about("Verify backup integrity")
+            .setting(AppSettings::TrailingVarArg)
             .arg(Arg::with_name("working")
                 .long("working")
                 .short("w")
@@ -71,7 +72,8 @@ fn app<'a, 'b>(default_path: &'a str,
                 .help("Working path for haumaru")
                 .default_value(default_working)
                 .takes_value(true)
-                .required(true)))
+                .required(true))
+            .arg(Arg::with_name("like").multiple(true)))
         .subcommand(SubCommand::with_name("ls")
             .about("List file(s)")
             .arg(Arg::with_name("key")
@@ -133,14 +135,14 @@ fn find_default_config_file() -> (String, String, String) {
         if default_config_file.exists() && default_config_file.is_file() {
             debug!("Found config at {:?}", default_config_file);
             return (c.to_str()
-                .expect("c.to_str")
-                .to_string(),
+                        .expect("c.to_str")
+                        .to_string(),
                     working_path.to_str()
-                .expect("c.to_str")
-                .to_string(),
+                        .expect("c.to_str")
+                        .to_string(),
                     default_config_file.to_str()
-                .expect("default_config_file.to_str")
-                .to_string());
+                        .expect("default_config_file.to_str")
+                        .to_string());
         }
         current_dir = c.parent().map(|c| c.to_path_buf());
     }
@@ -185,13 +187,19 @@ fn run() -> Result<i64, Box<Error>> {
     let (mut default_path, mut default_working, default_config_file) = find_default_config_file();
     {
         // load defaults from config file
-
-        let found_config = File::open(default_config_file.clone())?.as_config()?;
-        if let Some(path) = found_config.path() {
-            default_path = path;
-        }
-        if let Some(working) = found_config.working() {
-            default_working = working;
+        if path::Path::new(&default_config_file).exists() {
+            debug!("Loading auto found config at {}", default_config_file);
+            let found_config = File::open(default_config_file.clone())?
+                .as_config()
+                .map_err(|e| format!("Failed to load config from {}: {}", default_config_file, e))?;
+            if let Some(path) = found_config.path() {
+                default_path = path;
+            }
+            if let Some(working) = found_config.working() {
+                default_working = working;
+            }
+        } else {
+            debug!("Config file not auto found at {}", default_config_file);
         }
     }
 
@@ -206,14 +214,22 @@ fn run() -> Result<i64, Box<Error>> {
     let config = matches.value_of("config").ok_or(CliError::Missing("config".to_string()))?;
     info!("Using config at {}", config);
 
-    let user_config = File::open(config)?.as_config()?;
+    let user_config =
+        File::open(config).map_err(|e| format!("Failed to open config file {}: {}", config, e))?
+            .as_config()
+            .map_err(|e| format!("Failed to load config from {}: {}", config, e))?;
     debug!("{:?}", user_config);
 
     if let Some(cmd) = matches.subcommand_matches("backup") {
         haumaru_api::run(config_with_args(user_config, &cmd)?)?;
 
     } else if let Some(cmd) = matches.subcommand_matches("verify") {
-        haumaru_api::verify(config_with_args(user_config, &cmd)?)?;
+        let mut like = "%".to_owned();
+        let like_arg = cmd.value_of("like");
+        if let Some(has_like_arg) = like_arg {
+            like = has_like_arg.to_owned();
+        }
+        haumaru_api::verify(config_with_args(user_config, &cmd)?, like)?;
 
     } else if let Some(cmd) = matches.subcommand_matches("ls") {
         let key = cmd.value_of("key").ok_or(CliError::Missing("key".to_string()))?;
@@ -238,6 +254,7 @@ fn run() -> Result<i64, Box<Error>> {
 
 fn main() {
     haumaru::setup_logging("info");
+    debug!("Logging setup");
 
     match run() {
         Err(e) => {

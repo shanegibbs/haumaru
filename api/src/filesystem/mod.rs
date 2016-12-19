@@ -1,23 +1,21 @@
 mod watcher;
 
-use notify::Event;
-use notify::Error as NotifyError;
-use std::sync::mpsc::Receiver;
-use notify::RecommendedWatcher;
-use notify::Watcher as NotifyWatcher;
-use std::sync::mpsc::channel;
-use std::path::Path;
-use std::result::Result as StdResult;
-use std::{fs, io, fmt};
-use std::time::UNIX_EPOCH;
-use std::os::unix::fs::PermissionsExt;
-use time::Timespec;
-use std::error::Error;
-
 use {Node, get_key};
-
 pub use filesystem::watcher::Change;
 pub use filesystem::watcher::Watcher;
+use notify::Error as NotifyError;
+use notify::Event;
+use notify::RecommendedWatcher;
+use notify::Watcher as NotifyWatcher;
+use std::{fmt, fs, io};
+use std::error::Error;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::result::Result as StdResult;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::channel;
+use std::time::UNIX_EPOCH;
+use time::Timespec;
 
 pub type Result<T> = StdResult<T, BackupPathError>;
 
@@ -95,7 +93,7 @@ impl BackupPath {
             Err(e) => {
                 if e.kind() == io::ErrorKind::Other &&
                    e.description() == "creation time is not available on this platform currently" {
-                    warn!("ctime not supported on this platform yet")
+                    debug!("warn: ctime not supported on this platform yet")
                 } else {
                     return Err(BackupPathError::ReadCtime(e));
                 }
@@ -125,7 +123,7 @@ impl BackupPath {
     /// Take watcher
     pub fn watcher(&mut self) -> Result<Watcher> {
         debug!("Starting watcher on {}", &self.path);
-        try!(self.watcher.watch(&self.path).map_err(|e| BackupPathError::StartWatcher(e)));
+        self.watcher.watch(&self.path).map_err(|e| BackupPathError::StartWatcher(e))?;
         Ok(Watcher::new(self.rx.take().unwrap()))
     }
 }

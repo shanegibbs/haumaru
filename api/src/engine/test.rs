@@ -18,7 +18,9 @@ fn test_list(key: &str, f: &Fn(&mut Index)) -> String {
     let config = EngineConfig::new_detached("target/test/list_file");
     let store = LocalStorage::new(&config).expect("store");
 
+    expect!(index.create_backup_set(0), "create backup set");
     f(&mut index);
+    expect!(index.close_backup_set(), "close backup set");
 
     let mut engine = DefaultEngine::new(config, HashSet::new(), index, store).expect("new engine");
     let mut cur = Cursor::new(Vec::new());
@@ -85,7 +87,6 @@ fn list_empty_dir() {
                                index.insert(Node::new_dir("a", Timespec::new(10, 0), 500)
                                        .with_backup_set(5))
                                    .expect("insert dir");
-
                            });
     assert_eq!("", output.as_str());
 }

@@ -9,7 +9,7 @@ use time::{Timespec, at, strftime};
 use rustc_serialize::hex::ToHex;
 use std::error::Error as StdError;
 
-use {Node, Engine, Index, Storage, get_key};
+use {Node, Index, Storage, get_key};
 use filesystem::{Change, BackupPath};
 use queue::Queue;
 use engine::pre_send::PreSendWorker;
@@ -72,8 +72,7 @@ impl<I, S> DefaultEngine<I, S>
         } else {
 
             let mut config = config;
-            let path_buf = PathBuf::from(config.path())
-                .canonicalize()
+            let path_buf = PathBuf::from(config.path()).canonicalize()
                 .map_err(|e| {
                     DefaultEngineError::Other(format!("Unable to canonicalize backup path {}: {}",
                                                       config.path(),
@@ -110,7 +109,7 @@ impl<I, S> DefaultEngine<I, S>
             }
 
             // sending worker threads that [send -> sent]
-            for _ in 0..1 {
+            for _ in 0..12 {
                 let mut send_queue = send_queue.clone();
                 let mut sent_queue = sent_queue.clone();
                 let storage = storage.clone();
@@ -120,7 +119,8 @@ impl<I, S> DefaultEngine<I, S>
                         let path = item.as_ref().node().path().to_string();
                         match storage.send(item.as_mut()) {
                             Ok(()) => {
-                                sent_queue.push(item.success().complete());
+                                sent_queue.push(item.as_ref().node().clone());
+                                item.success();
                             }
                             Err(e) => error!("Failing sending {}: {}", path, e),
                         }
@@ -134,16 +134,14 @@ impl<I, S> DefaultEngine<I, S>
                 let mut index = index;
                 thread::spawn(move || {
                     loop {
-                        let mut item = sent_queue.pop();
+                        let item = sent_queue.pop();
                         let path = item.as_ref().path().to_string();
-                        match index.insert(item.as_ref()) {
+                        match index.insert(item.as_ref().clone()) {
                             Ok(n) => {
                                 debug!("Inserted {} - {:?}", path, n);
                                 item.success();
                             }
-                            Err(e) => {
-                                error!("Failed to insert {}: {}", path, e);
-                            }
+                            Err(e) => error!("Failed to insert {}: {}", path, e),
                         }
                     }
                 });
@@ -157,10 +155,28 @@ impl<I, S> DefaultEngine<I, S>
         self.backup_path.as_mut().expect("some BackupPath")
     }
 
+    pub fn scan_as_backup_set(&mut self, now: i64) -> StdResult<(), Box<StdError>> {
+        let backup_set = self.index.create_backup_set(now).map_err(|e| box e)?;
+        self.scan(backup_set)?;
+        self.index.close_backup_set()?;
+        Ok(())
+    }
+
     pub fn wait_for_queue_drain(&mut self) {
         self.pre_send_queue.wait();
         self.send_queue.wait();
         self.sent_queue.wait();
+
+        let pre_send_len = self.pre_send_queue.len();
+        let send_queue_len = self.send_queue.len();
+        let sent_queue_len = self.sent_queue.len();
+
+        if pre_send_len + send_queue_len + sent_queue_len > 0 {
+            let queue_stats = format!("{}/{}/{}", pre_send_len, send_queue_len, sent_queue_len);
+            error!("Items still in queue: {}", queue_stats);
+            panic!("Items still in queue");
+        }
+
     }
 
     pub fn scan(&mut self, backup_set: u64) -> StdResult<(), Box<StdError>> {
@@ -241,6 +257,93 @@ impl<I, S> DefaultEngine<I, S>
         Ok(())
     }
 
+    fn process_change(&mut self, backup_set: u64, change: Change) -> StdResult<(), Box<StdError>> {
+        if is_excluded(&self.excludes, &change, self.config.path()) {
+            trace!("Skipping excluded path: {:?}", change.path());
+            return Ok(());
+        }
+
+        debug!("Received {:?}", change);
+
+        let change_path_str = change.path().to_str().unwrap();
+        let key = get_key(self.config.path(), change_path_str);
+        debug!("Change key = {}", key);
+
+        let node = self.index
+            .get(key.clone(), None)
+            .map_err(|e| DefaultEngineError::Index(box e))?;
+        let file = self.backup_path()
+            .get_file(change.path())
+            .map_err(|e| DefaultEngineError::GetFile(e))?;
+
+        let queue_stats = format!("{}/{}/{}",
+                                  self.pre_send_queue.len(),
+                                  self.send_queue.len(),
+                                  self.sent_queue.len());
+
+        match file {
+            None => {
+                match node {
+                    None => {
+                        debug!("Skipping transient {:?}", change);
+                    }
+                    Some(existing_node) => {
+                        info!("{} - {}", queue_stats, key);
+                        debug!("Detected DELETE on {:?}, {:?}", change, existing_node);
+                        self.index
+                            .insert(existing_node.as_deleted().with_backup_set(backup_set))
+                            .map_err(|e| DefaultEngineError::Index(box e))?;
+                    }
+                }
+            }
+            Some(new_node) => {
+
+                if let Some(size) = self.config.max_file_size() {
+                    if new_node.size() > size {
+                        debug!("Skipping large file {}", key);
+                        return Ok(());
+                    }
+                }
+
+                match node {
+                    None => {
+                        info!("{} + {}", queue_stats, key);
+                        debug!("Detected NEW on {:?}, {:?}", change, new_node);
+                        if let Err(e) = self.queue_for_send(new_node.with_backup_set(backup_set)) {
+                            error!("Failed queuing new {}: {}", key, e);
+                        }
+                    }
+                    Some(existing_node) => {
+
+                        // no need to update directory
+                        if existing_node.is_dir() && new_node.is_dir() {
+                            debug!("  {} (skipping dir)", key);
+                            return Ok(());
+                        }
+
+                        // size and mtime match, skip.
+                        if new_node.size() == existing_node.size() &&
+                           new_node.mtime() == existing_node.mtime() {
+                            debug!("  {} (assume match)", key);
+                            return Ok(());
+                        }
+
+                        info!("{} . {}", queue_stats, key);
+                        debug!("Detected UPDATE on {:?},\n{:?},\n{:?}",
+                               change,
+                               existing_node,
+                               new_node);
+                        if let Err(e) = self.queue_for_send(new_node.with_backup_set(backup_set)) {
+                            error!("Failed queuing updated {}: {}", key, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn restore_node(&mut self,
                     node: Node,
                     node_base: &str,
@@ -284,13 +387,11 @@ impl<I, S> DefaultEngine<I, S>
                 .expect("restore_path_str string");
 
             debug!("Restoring {}", restore_path_str);
-            let mut outgest = File::create(&restore_path)
-                .map_err(|e| {
+            let mut outgest = File::create(&restore_path).map_err(|e| {
                     let msg = format!("Unable to create file  {}: {}", node.path(), e);
                     box DefaultEngineError::GeneralWithNode(msg, node.clone())
                 })?;
-            copy(&mut ingest, &mut outgest)
-                .map_err(|e| {
+            copy(&mut ingest, &mut outgest).map_err(|e| {
                     DefaultEngineError::GeneralWithNode(format!("Failed writing {}: {}",
                                                                 restore_path_str,
                                                                 e),
@@ -305,7 +406,7 @@ impl<I, S> DefaultEngine<I, S>
         Ok(if n.is_file() {
             self.pre_send_queue.push(n);
         } else {
-            self.index.insert(&n).map_err(|e| DefaultEngineError::Index(box e))?;
+            self.index.insert(n).map_err(|e| DefaultEngineError::Index(box e))?;
             ()
         })
     }

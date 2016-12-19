@@ -1,20 +1,19 @@
-use std::path::PathBuf;
-use std::result::Result as StdResult;
-use std::thread;
-use std::thread::sleep;
-use std::sync::{Arc, Mutex};
-use std::collections::HashSet;
-use std::time::Duration;
-use std::fs::create_dir_all;
-use std::io::Write;
-use time;
-use time::{Timespec, at, strftime};
-use std::error::Error as StdError;
-
-use super::*;
-use {Engine, Index, Storage, get_key};
+use {Engine, Index, Storage};
 use filesystem::Change;
 use index::IndexError;
+use std::collections::HashSet;
+use std::error::Error as StdError;
+use std::fs::create_dir_all;
+use std::io::Write;
+use std::path::PathBuf;
+use std::result::Result as StdResult;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::thread::sleep;
+use std::time::Duration;
+use super::*;
+use time;
+use time::{Timespec, at, strftime};
 
 impl<I, S> Engine for DefaultEngine<I, S>
     where I: Index + Send + Clone + 'static,
@@ -52,12 +51,11 @@ impl<I, S> Engine for DefaultEngine<I, S>
             });
         }
 
-        {
-            let now = time::now_utc().to_timespec();
-            let backup_set = self.index.create_backup_set(now.sec).map_err(|e| box e)?;
-            self.scan(backup_set)?;
-        }
+        // full scan into backup set
+        let now = time::now_utc().to_timespec();
+        self.scan_as_backup_set(now.sec)?;
 
+        // start long running backup loop
         loop {
             let now = time::now_utc().to_timespec();
             let seconds_div = (now.sec / self.config.period() as i64) as i64;
@@ -83,118 +81,46 @@ impl<I, S> Engine for DefaultEngine<I, S>
                 }
             }
 
-            if work_queue.len() > 0 {
-                let backup_set = self.index.create_backup_set(next_time.sec)?;
-                for change in work_queue {
-                    self.process_change(backup_set, change).unwrap();
-                }
-            }
-
-            self.wait_for_queue_drain();
-
+            self.process_changes(next_time.sec, work_queue)?;
             info!("Backup run complete");
-
         }
     }
 
-    fn process_change(&mut self, backup_set: u64, change: Change) -> StdResult<(), Box<StdError>> {
-        if is_excluded(&self.excludes, &change, self.config.path()) {
-            trace!("Skipping excluded path: {:?}", change.path());
+    fn process_changes(&mut self,
+                       next_time: i64,
+                       work_queue: Vec<Change>)
+                       -> StdResult<(), Box<StdError>> {
+        if work_queue.is_empty() {
             return Ok(());
         }
-
-        debug!("Received {:?}", change);
-
-        let change_path_str = change.path().to_str().unwrap();
-        let key = get_key(self.config.path(), change_path_str);
-        debug!("Change key = {}", key);
-
-        let node = self.index
-            .get(key.clone(), None)
-            .map_err(|e| DefaultEngineError::Index(box e))?;
-        let file = self.backup_path()
-            .get_file(change.path())
-            .map_err(|e| DefaultEngineError::GetFile(e))?;
-
-        let queue_stats = format!("{}/{}/{}",
-                                  self.pre_send_queue.len(),
-                                  self.send_queue.len(),
-                                  self.sent_queue.len());
-
-        match file {
-            None => {
-                match node {
-                    None => {
-                        debug!("Skipping transient {:?}", change);
-                    }
-                    Some(existing_node) => {
-                        info!("{} - {}", queue_stats, key);
-                        debug!("Detected DELETE on {:?}, {:?}", change, existing_node);
-                        self.index
-                            .insert(&existing_node.as_deleted().with_backup_set(backup_set))
-                            .map_err(|e| DefaultEngineError::Index(box e))?;
-                    }
-                }
-            }
-            Some(new_node) => {
-
-                if let Some(size) = self.config.max_file_size() {
-                    if new_node.size() > size {
-                        debug!("Skipping large file {}", key);
-                        return Ok(());
-                    }
-                }
-
-                match node {
-                    None => {
-                        info!("{} + {}", queue_stats, key);
-                        debug!("Detected NEW on {:?}, {:?}", change, new_node);
-                        if let Err(e) = self.queue_for_send(new_node.with_backup_set(backup_set)) {
-                            error!("Failed queuing new {}: {}", key, e);
-                        }
-                    }
-                    Some(existing_node) => {
-
-                        // no need to update directory
-                        if existing_node.is_dir() && new_node.is_dir() {
-                            debug!("  {} (skipping dir)", key);
-                            return Ok(());
-                        }
-
-                        // size and mtime match, skip.
-                        if new_node.size() == existing_node.size() &&
-                           new_node.mtime() == existing_node.mtime() {
-                            debug!("  {} (assume match)", key);
-                            return Ok(());
-                        }
-
-                        info!("{} . {}", queue_stats, key);
-                        debug!("Detected UPDATE on {:?},\n{:?},\n{:?}",
-                               change,
-                               existing_node,
-                               new_node);
-                        if let Err(e) = self.queue_for_send(new_node.with_backup_set(backup_set)) {
-                            error!("Failed queuing updated {}: {}", key, e);
-                        }
-                    }
-                }
-            }
+        let backup_set = self.index.create_backup_set(next_time)?;
+        for change in work_queue {
+            self.process_change(backup_set, change).unwrap();
         }
-
+        self.wait_for_queue_drain();
+        self.index.close_backup_set()?;
         Ok(())
     }
 
-    fn verify_store(&mut self) -> StdResult<(), Box<StdError>> {
+    fn verify_store(&mut self, like: String) -> StdResult<(), Box<StdError>> {
         info!("Verifying store");
         let mut failed = vec![];
         let storage = &self.storage;
 
         self.index
-            .visit_all_hashable(&mut |node| {
-                if let Some(node) = storage.verify(node)
-                    .map_err(|e| IndexError::Fatal(format!("Verify error: {}", e), None))? {
-                    error!("Verification failed for {}", node.hash_string());
-                    failed.push(node);
+            .visit_all_hashable(like,
+                                &mut |node| {
+                let (node, valid) = storage.verify(node)
+                    .map_err(|e| IndexError::Fatal(format!("Verify error: {}", e), None))?;
+                if valid {
+                    if valid {
+                        info!("{:4} {} OK",
+                              node.backup_set().expect("backup set"),
+                              node.path());
+                    } else {
+                        error!("Verification failed for {}", node.hash_string());
+                        failed.push(node);
+                    }
                 }
                 Ok(())
             })?;
