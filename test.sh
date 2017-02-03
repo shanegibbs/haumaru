@@ -1,3 +1,5 @@
 #!/bin/bash -eux
 
-cargo test -p haumaru -p haumaru-api
+umask 022
+
+RUST_TEST_THREADS=1 cargo test -p haumaru -p haumaru-api
